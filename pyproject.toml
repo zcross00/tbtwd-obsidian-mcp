@@ -1,0 +1,16 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tbtwd-obsidian-mcp"
+version = "0.1.0"
+description = "MCP server for The Brain That Wouldn't Die — scoped retrieval over Obsidian-style memory files"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp[cli]>=1.0.0",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+tbtwd-obsidian-mcp = "tbtwd_obsidian_mcp.server:main"
