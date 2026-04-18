@@ -31,15 +31,18 @@ mcp = FastMCP(
 
 
 def _get_vault() -> BrainVault:
-    """Resolve the vault path and optional repo URL from environment variables."""
-    vault_path = os.environ.get("BRAIN_VAULT_PATH")
-    if not vault_path:
-        raise RuntimeError(
-            "BRAIN_VAULT_PATH environment variable is not set. "
-            "Point it to the root of your Brain vault directory."
-        )
+    """Resolve the vault from environment variables.
+
+    BRAIN_VAULT_REPO (required): Git remote URL — the vault is cloned/pulled on startup.
+    BRAIN_VAULT_PATH (optional): Local override — skip git, use this directory directly.
+    """
     repo_url = os.environ.get("BRAIN_VAULT_REPO")
-    return BrainVault(vault_path, repo_url=repo_url)
+    vault_path = os.environ.get("BRAIN_VAULT_PATH")
+    if not repo_url and not vault_path:
+        raise RuntimeError(
+            "Set BRAIN_VAULT_REPO (git remote URL) or BRAIN_VAULT_PATH (local directory)."
+        )
+    return BrainVault(repo_url=repo_url, vault_path=vault_path)
 
 
 # ---------------------------------------------------------------------------

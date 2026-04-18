@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import subprocess
 from pathlib import Path
@@ -55,15 +56,39 @@ def extract_wikilinks(text: str) -> list[str]:
 class BrainVault:
     """Read/write interface to the Brain vault directory."""
 
-    def __init__(self, vault_path: str | Path, repo_url: str | None = None) -> None:
-        self.root = Path(vault_path).resolve()
-        if not self.root.is_dir():
-            raise FileNotFoundError(f"Vault directory not found: {self.root}")
+    _CACHE_ROOT = Path.home() / ".cache" / "tbtwd-brain"
+
+    def __init__(
+        self,
+        *,
+        repo_url: str | None = None,
+        vault_path: str | Path | None = None,
+    ) -> None:
         self._repo_url = repo_url
-        if repo_url:
-            self._ensure_remote(repo_url)
+
+        if vault_path:
+            # Explicit local path — use directly
+            self.root = Path(vault_path).resolve()
+            if not self.root.is_dir():
+                raise FileNotFoundError(f"Vault directory not found: {self.root}")
+            if repo_url:
+                self._ensure_remote(repo_url)
+        elif repo_url:
+            # No local path — clone/pull from remote into cache
+            self.root = self._cache_dir(repo_url)
+            self._clone_or_pull(repo_url)
+        else:
+            raise ValueError(
+                "Provide at least one of repo_url or vault_path."
+            )
 
     # -- git operations ----------------------------------------------------
+
+    @classmethod
+    def _cache_dir(cls, repo_url: str) -> Path:
+        """Return a deterministic cache directory for a repo URL."""
+        slug = hashlib.sha256(repo_url.encode()).hexdigest()[:12]
+        return cls._CACHE_ROOT / slug
 
     def _git(self, *args: str) -> subprocess.CompletedProcess[str]:
         """Run a git command in the vault directory."""
@@ -74,6 +99,21 @@ class BrainVault:
             text=True,
             timeout=30,
         )
+
+    def _clone_or_pull(self, repo_url: str) -> None:
+        """Clone the repo into the cache, or pull if already present."""
+        if (self.root / ".git").is_dir():
+            self._ensure_remote(repo_url)
+            self._git("fetch", "origin")
+            self._git("reset", "--hard", "origin/main")
+        else:
+            self.root.mkdir(parents=True, exist_ok=True)
+            subprocess.run(
+                ["git", "clone", repo_url, str(self.root)],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
 
     def _ensure_remote(self, repo_url: str) -> None:
         """Make sure 'origin' points to the configured repo URL."""
