@@ -7,10 +7,19 @@ Exposes scoped retrieval tools via the Model Context Protocol.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
+import time
 
 from mcp.server.fastmcp import FastMCP
+
+log = logging.getLogger("tbtwd-mcp")
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s [%(name)s] %(levelname)s %(message)s",
+    stream=sys.stderr,
+)
 
 from tbtwd_obsidian_mcp.storage import BrainVault
 
@@ -59,20 +68,30 @@ type, project, tags, serves, depends-on) and a markdown body with [[wiki-links]]
 """,
 )
 
+_vault_instance: BrainVault | None = None
+
 
 def _get_vault() -> BrainVault:
-    """Resolve the vault from environment variables.
+    """Resolve the vault from environment variables (cached singleton).
 
-    BRAIN_VAULT_REPO (required): Git remote URL — the vault is cloned/pulled on startup.
-    BRAIN_VAULT_PATH (optional): Local override — skip git, use this directory directly.
+    BRAIN_VAULT_REPO (required): Git remote URL — the vault is cloned/pulled on first access.
+    BRAIN_VAULT_PATH (optional): Local override — skip clone, use this directory directly.
     """
+    global _vault_instance
+    if _vault_instance is not None:
+        return _vault_instance
+
+    log.debug("_get_vault: resolving (first call)...")
+    t0 = time.monotonic()
     repo_url = os.environ.get("BRAIN_VAULT_REPO")
     vault_path = os.environ.get("BRAIN_VAULT_PATH")
     if not repo_url and not vault_path:
         raise RuntimeError(
             "Set BRAIN_VAULT_REPO (git remote URL) or BRAIN_VAULT_PATH (local directory)."
         )
-    return BrainVault(repo_url=repo_url, vault_path=vault_path)
+    _vault_instance = BrainVault(repo_url=repo_url, vault_path=vault_path)
+    log.debug("_get_vault: resolved in %.2fs, root=%s", time.monotonic() - t0, _vault_instance.root)
+    return _vault_instance
 
 
 # ---------------------------------------------------------------------------
@@ -188,7 +207,9 @@ def check_links() -> str:
 
 def main() -> None:
     """Run the MCP server via stdio transport."""
+    log.info("Server starting, transport=stdio")
     mcp.run(transport="stdio")
+    log.info("Server exited")
 
 
 if __name__ == "__main__":

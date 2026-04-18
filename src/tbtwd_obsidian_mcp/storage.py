@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
+
+log = logging.getLogger("tbtwd-mcp.storage")
 
 import yaml
 
@@ -65,22 +69,26 @@ class BrainVault:
         vault_path: str | Path | None = None,
     ) -> None:
         self._repo_url = repo_url
+        log.debug("BrainVault.__init__(repo_url=%s, vault_path=%s)", repo_url, vault_path)
 
         if vault_path:
             # Explicit local path — use directly
             self.root = Path(vault_path).resolve()
             if not self.root.is_dir():
                 raise FileNotFoundError(f"Vault directory not found: {self.root}")
-            if repo_url:
-                self._ensure_remote(repo_url)
+            # Defer remote setup — only needed on push, verified lazily
         elif repo_url:
             # No local path — clone/pull from remote into cache
             self.root = self._cache_dir(repo_url)
+            log.debug("_clone_or_pull start")
+            t0 = time.monotonic()
             self._clone_or_pull(repo_url)
+            log.debug("_clone_or_pull done in %.2fs", time.monotonic() - t0)
         else:
             raise ValueError(
                 "Provide at least one of repo_url or vault_path."
             )
+        log.debug("BrainVault ready, root=%s", self.root)
 
     # -- git operations ----------------------------------------------------
 
@@ -92,13 +100,17 @@ class BrainVault:
 
     def _git(self, *args: str) -> subprocess.CompletedProcess[str]:
         """Run a git command in the vault directory."""
-        return subprocess.run(
+        log.debug("git %s", " ".join(args))
+        t0 = time.monotonic()
+        result = subprocess.run(
             ["git", *args],
             cwd=self.root,
             capture_output=True,
             text=True,
             timeout=30,
         )
+        log.debug("git %s finished in %.2fs (rc=%d)", args[0], time.monotonic() - t0, result.returncode)
+        return result
 
     def _clone_or_pull(self, repo_url: str) -> None:
         """Clone the repo into the cache, or pull if already present."""
@@ -130,6 +142,9 @@ class BrainVault:
 
         if not self._repo_url:
             return info
+
+        # Ensure remote is configured before push
+        self._ensure_remote(self._repo_url)
 
         # Stage
         result = self._git("add", rel)
