@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -54,10 +55,69 @@ def extract_wikilinks(text: str) -> list[str]:
 class BrainVault:
     """Read/write interface to the Brain vault directory."""
 
-    def __init__(self, vault_path: str | Path) -> None:
+    def __init__(self, vault_path: str | Path, repo_url: str | None = None) -> None:
         self.root = Path(vault_path).resolve()
         if not self.root.is_dir():
             raise FileNotFoundError(f"Vault directory not found: {self.root}")
+        self._repo_url = repo_url
+        if repo_url:
+            self._ensure_remote(repo_url)
+
+    # -- git operations ----------------------------------------------------
+
+    def _git(self, *args: str) -> subprocess.CompletedProcess[str]:
+        """Run a git command in the vault directory."""
+        return subprocess.run(
+            ["git", *args],
+            cwd=self.root,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+    def _ensure_remote(self, repo_url: str) -> None:
+        """Make sure 'origin' points to the configured repo URL."""
+        result = self._git("remote", "get-url", "origin")
+        if result.returncode != 0:
+            self._git("remote", "add", "origin", repo_url)
+        elif result.stdout.strip() != repo_url:
+            self._git("remote", "set-url", "origin", repo_url)
+
+    def _commit_and_push(self, path: Path, message: str) -> dict[str, Any]:
+        """Stage a file, commit, and push to main. Returns git status info."""
+        rel = str(path.relative_to(self.root))
+        info: dict[str, Any] = {"git": "skipped"}
+
+        if not self._repo_url:
+            return info
+
+        # Stage
+        result = self._git("add", rel)
+        if result.returncode != 0:
+            info["git"] = "error"
+            info["git_error"] = f"git add failed: {result.stderr.strip()}"
+            return info
+
+        # Commit
+        result = self._git("commit", "-m", message)
+        if result.returncode != 0:
+            stderr = result.stderr.strip()
+            if "nothing to commit" in result.stdout.lower():
+                info["git"] = "no_changes"
+                return info
+            info["git"] = "error"
+            info["git_error"] = f"git commit failed: {stderr}"
+            return info
+
+        # Push
+        result = self._git("push", "origin", "main")
+        if result.returncode != 0:
+            info["git"] = "commit_only"
+            info["git_error"] = f"push failed: {result.stderr.strip()}"
+            return info
+
+        info["git"] = "pushed"
+        return info
 
     # -- brief.yml (L0) ----------------------------------------------------
 
@@ -297,10 +357,17 @@ class BrainVault:
 
         path.write_text(new_text, encoding="utf-8")
 
+        # Auto-commit and push
+        field_names = ", ".join(fields.keys())
+        git_info = self._commit_and_push(
+            path, f"update {entity_id}: {field_names}"
+        )
+
         return {
             "updated": entity_id,
             "fields": list(fields.keys()),
             "warnings": warnings,
+            **git_info,
         }
 
     # -- link checking -----------------------------------------------------
