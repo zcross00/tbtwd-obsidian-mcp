@@ -6,6 +6,7 @@ import hashlib
 import logging
 import re
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -69,6 +70,7 @@ class BrainVault:
         vault_path: str | Path | None = None,
     ) -> None:
         self._repo_url = repo_url
+        self._remote_verified = False
         log.debug("BrainVault.__init__(repo_url=%s, vault_path=%s)", repo_url, vault_path)
 
         if vault_path:
@@ -116,27 +118,34 @@ class BrainVault:
         """Clone the repo into the cache, or pull if already present."""
         if (self.root / ".git").is_dir():
             self._ensure_remote(repo_url)
-            self._git("fetch", "origin")
+            self._git("fetch", "--depth", "1", "origin", "main")
             self._git("reset", "--hard", "origin/main")
         else:
             self.root.mkdir(parents=True, exist_ok=True)
             subprocess.run(
-                ["git", "clone", repo_url, str(self.root)],
+                ["git", "clone", "--depth", "1", repo_url, str(self.root)],
                 capture_output=True,
                 text=True,
                 timeout=60,
             )
 
     def _ensure_remote(self, repo_url: str) -> None:
-        """Make sure 'origin' points to the configured repo URL."""
+        """Make sure 'origin' points to the configured repo URL (cached after first check)."""
+        if self._remote_verified:
+            return
         result = self._git("remote", "get-url", "origin")
         if result.returncode != 0:
             self._git("remote", "add", "origin", repo_url)
         elif result.stdout.strip() != repo_url:
             self._git("remote", "set-url", "origin", repo_url)
+        self._remote_verified = True
 
     def _commit_and_push(self, path: Path, message: str) -> dict[str, Any]:
-        """Stage a file, commit, and push to main. Returns git status info."""
+        """Stage a file, commit, and push to main. Returns git status info.
+
+        Push runs in a background thread so the tool response is not blocked
+        by network latency.
+        """
         rel = str(path.relative_to(self.root))
         info: dict[str, Any] = {"git": "skipped"}
 
@@ -156,22 +165,27 @@ class BrainVault:
         # Commit
         result = self._git("commit", "-m", message)
         if result.returncode != 0:
-            stderr = result.stderr.strip()
-            if "nothing to commit" in result.stdout.lower():
+            combined = (result.stdout + result.stderr).lower()
+            if "nothing to commit" in combined or "nothing added to commit" in combined:
                 info["git"] = "no_changes"
                 return info
             info["git"] = "error"
-            info["git_error"] = f"git commit failed: {stderr}"
+            info["git_error"] = f"git commit failed: {result.stderr.strip() or result.stdout.strip()}"
             return info
 
-        # Push
-        result = self._git("push", "origin", "main")
-        if result.returncode != 0:
-            info["git"] = "commit_only"
-            info["git_error"] = f"push failed: {result.stderr.strip()}"
-            return info
+        # Push in background — don't block the tool response on network I/O
+        def _bg_push() -> None:
+            try:
+                result = self._git("push", "origin", "main")
+                if result.returncode != 0:
+                    log.warning("background push failed: %s", result.stderr.strip())
+                else:
+                    log.info("background push succeeded")
+            except Exception:
+                log.exception("background push error")
 
-        info["git"] = "pushed"
+        threading.Thread(target=_bg_push, daemon=True).start()
+        info["git"] = "committed_push_pending"
         return info
 
     # -- brief.yml (L0) ----------------------------------------------------
