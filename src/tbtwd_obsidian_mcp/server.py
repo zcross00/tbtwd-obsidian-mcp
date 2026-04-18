@@ -57,7 +57,8 @@ def get_context(entity_id: str) -> str:
     """Return the full entity for the given ID plus one-level-deep linked synopses.
 
     Args:
-        entity_id: Any entity ID (e.g. S-3, G-2, D-5, DR-1).
+        entity_id: Entity identifier — a filename slug (e.g. 'storage-layer'),
+            a path (e.g. 'systems/storage-layer'), or a frontmatter ID (e.g. 'S-1').
 
     Returns entity content with frontmatter, body, and synopsis of each
     directly linked entity (~400-800 tokens).
@@ -73,22 +74,27 @@ def query(
     goal: str | None = None,
     status: str | None = None,
     entity_type: str | None = None,
+    project: str | None = None,
 ) -> str:
     """Scan frontmatter across all entity files and return matching synopses.
 
     All filters are optional and combined with AND logic.
+    Results are sorted by project relevance: active project entities get
+    full synopses, universal entities (no project field) get normal detail,
+    and background entities (other projects) get minimal one-liners.
 
     Args:
         tag: Filter by tag (e.g. "combat", "core-gameplay").
         goal: Filter by linked goal (e.g. "G-2").
         status: Filter by status (e.g. "In Progress", "concept").
-        entity_type: Filter by entity type prefix (e.g. "S", "G", "D", "DR", "F").
+        entity_type: Filter by entity folder (e.g. "systems", "goals", "decisions", "features", "drift").
+        project: Override the active project for relevance sorting. Defaults to active-project from brief.yml.
 
     Returns a compact list of matching IDs with one-line synopses.
     Use get_context() to drill into specific results.
     """
     vault = _get_vault()
-    results = vault.query(tag=tag, goal=goal, status=status, entity_type=entity_type)
+    results = vault.query(tag=tag, goal=goal, status=status, entity_type=entity_type, project=project)
     return json.dumps(results, indent=2, default=str)
 
 
@@ -97,7 +103,7 @@ def update_memory(entity_id: str, fields: dict) -> str:
     """Update an entity's YAML frontmatter fields.
 
     Args:
-        entity_id: The entity ID to update (e.g. S-3, G-2).
+        entity_id: Entity identifier — a filename slug, path, or frontmatter ID.
         fields: Dictionary of frontmatter fields to set or overwrite.
 
     Validates YAML structure and link integrity before persisting.

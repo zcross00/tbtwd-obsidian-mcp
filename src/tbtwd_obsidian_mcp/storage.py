@@ -15,14 +15,8 @@ import yaml
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
 _WIKILINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
 
-# Entity type → subfolder mapping
-ENTITY_PREFIXES: dict[str, str] = {
-    "G": "goals",
-    "S": "systems",
-    "F": "features",
-    "D": "decisions",
-    "DR": "drift",
-}
+# Folders to skip when scanning for entity subfolders
+_IGNORED_FOLDERS: set[str] = {"Templates"}
 
 
 def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
@@ -68,50 +62,104 @@ class BrainVault:
             raise FileNotFoundError("brief.yml not found in vault root")
         return yaml.safe_load(brief_path.read_text(encoding="utf-8")) or {}
 
+    def _active_project(self) -> str | None:
+        """Return the active-project from brief.yml, or None."""
+        try:
+            brief = self.read_brief()
+        except FileNotFoundError:
+            return None
+        return brief.get("active-project")
+
+    @staticmethod
+    def _entity_relevance(fm: dict[str, Any], active_project: str | None) -> str:
+        """Classify relevance: 'active', 'universal', or 'background'.
+
+        - active: entity's project list contains the active project
+        - universal: entity has no project field (always relevant)
+        - background: entity belongs to other projects only
+        """
+        projects = fm.get("project")
+        if projects is None:
+            return "universal"
+        if active_project and active_project in projects:
+            return "active"
+        return "background"
+
     # -- entity files ------------------------------------------------------
 
-    def _resolve_entity_path(self, entity_id: str) -> Path | None:
-        """Map an entity ID like 'S-3' to its file path, or None."""
-        # Determine prefix (handle multi-char prefixes like DR)
-        for prefix in sorted(ENTITY_PREFIXES, key=len, reverse=True):
-            if entity_id.startswith(prefix + "-"):
-                folder = ENTITY_PREFIXES[prefix]
-                # Try both .md and .yml extensions
-                for ext in (".md", ".yml"):
-                    p = self.root / folder / f"{entity_id}{ext}"
-                    if p.exists():
-                        return p
-                return None
+    def _entity_folders(self) -> list[str]:
+        """Discover all entity subfolders dynamically (any non-hidden, non-ignored directory)."""
+        return [
+            d.name
+            for d in self.root.iterdir()
+            if d.is_dir() and not d.name.startswith(".") and d.name not in _IGNORED_FOLDERS
+        ]
+
+    def _iter_entity_files(self) -> list[tuple[str, Path]]:
+        """Return (subfolder_name, path) for every entity file in the vault."""
+        results: list[tuple[str, Path]] = []
+        for folder_name in self._entity_folders():
+            folder = self.root / folder_name
+            for p in folder.iterdir():
+                if p.suffix in (".md", ".yml") and p.is_file():
+                    results.append((folder_name, p))
+        return results
+
+    def _resolve_entity_path(self, identifier: str) -> Path | None:
+        """Resolve an entity by ID (e.g. 'S-1'), slug (e.g. 'storage-layer'),
+        or path (e.g. 'systems/storage-layer') to its file path.
+        """
+        # If identifier contains a slash, treat as folder/slug
+        if "/" in identifier:
+            folder, slug = identifier.rsplit("/", 1)
+            for ext in ("", ".md", ".yml"):
+                p = self.root / folder / f"{slug}{ext}"
+                if p.exists():
+                    return p
+            return None
+
+        # Try matching by filename slug across all entity folders
+        for _, path in self._iter_entity_files():
+            if path.stem == identifier:
+                return path
+
+        # Try matching by frontmatter id field
+        for _, path in self._iter_entity_files():
+            text = path.read_text(encoding="utf-8")
+            fm, _ = _parse_frontmatter(text)
+            if fm.get("id") == identifier:
+                return path
+
         return None
 
-    def read_entity(self, entity_id: str) -> dict[str, Any]:
+    def read_entity(self, identifier: str) -> dict[str, Any]:
         """Read an entity file and return {id, frontmatter, body, links, path}."""
-        path = self._resolve_entity_path(entity_id)
+        path = self._resolve_entity_path(identifier)
         if path is None:
-            raise FileNotFoundError(f"Entity {entity_id} not found in vault")
+            raise FileNotFoundError(f"Entity '{identifier}' not found in vault")
 
         text = path.read_text(encoding="utf-8")
         fm, body = _parse_frontmatter(text)
         links = extract_wikilinks(text)
 
         return {
-            "id": entity_id,
+            "id": fm.get("id", path.stem),
             "frontmatter": fm,
             "body": body.strip(),
             "links": links,
             "path": str(path.relative_to(self.root)),
         }
 
-    def _synopsis(self, entity_id: str) -> dict[str, Any] | None:
+    def _synopsis(self, identifier: str) -> dict[str, Any] | None:
         """Return a minimal synopsis (title + status) for an entity, or None."""
         try:
-            entity = self.read_entity(entity_id)
+            entity = self.read_entity(identifier)
         except FileNotFoundError:
             return None
         fm = entity["frontmatter"]
         return {
-            "id": entity_id,
-            "title": fm.get("title", entity_id),
+            "id": entity["id"],
+            "title": fm.get("title", entity["id"]),
             "status": fm.get("status", "unknown"),
         }
 
@@ -119,12 +167,15 @@ class BrainVault:
         """Return the entity + one-level-deep synopses of linked entities."""
         entity = self.read_entity(entity_id)
 
-        # Resolve linked entity IDs from wiki-links
+        # Resolve linked entities from wiki-links
         linked_synopses: list[dict[str, Any]] = []
         for link_target in entity["links"]:
-            # Extract entity ID from link targets like "goals/G-2" or "G-2"
-            leaf = link_target.rsplit("/", 1)[-1]
-            syn = self._synopsis(leaf)
+            # Try full path first (e.g. "goals/token-efficient-orientation"),
+            # then just the leaf slug
+            syn = self._synopsis(link_target)
+            if not syn:
+                leaf = link_target.rsplit("/", 1)[-1]
+                syn = self._synopsis(leaf)
             if syn:
                 linked_synopses.append(syn)
 
@@ -133,18 +184,6 @@ class BrainVault:
 
     # -- query across files ------------------------------------------------
 
-    def _iter_entity_files(self) -> list[tuple[str, Path]]:
-        """Yield (subfolder_name, path) for every entity file in the vault."""
-        results: list[tuple[str, Path]] = []
-        for folder_name in ENTITY_PREFIXES.values():
-            folder = self.root / folder_name
-            if not folder.is_dir():
-                continue
-            for p in folder.iterdir():
-                if p.suffix in (".md", ".yml") and p.is_file():
-                    results.append((folder_name, p))
-        return results
-
     def query(
         self,
         *,
@@ -152,8 +191,16 @@ class BrainVault:
         goal: str | None = None,
         status: str | None = None,
         entity_type: str | None = None,
+        project: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Scan frontmatter across all entity files. Return matching synopses."""
+        """Scan frontmatter across all entity files. Return matching synopses.
+
+        Results are sorted by project relevance: active project first,
+        then universal (no project field), then background.
+        Active/universal entities get full synopses; background entities
+        get minimal one-liners.
+        """
+        active = project or self._active_project()
         matches: list[dict[str, Any]] = []
 
         for folder_name, path in self._iter_entity_files():
@@ -162,8 +209,7 @@ class BrainVault:
 
             # Filter by entity_type (folder-based)
             if entity_type:
-                expected_folder = ENTITY_PREFIXES.get(entity_type.upper())
-                if expected_folder and folder_name != expected_folder:
+                if folder_name != entity_type.lower():
                     continue
 
             # Filter by status
@@ -184,11 +230,22 @@ class BrainVault:
                     continue
 
             entity_id = fm.get("id", path.stem)
-            matches.append({
+            relevance = self._entity_relevance(fm, active)
+
+            entry: dict[str, Any] = {
                 "id": entity_id,
                 "title": fm.get("title", entity_id),
-                "status": fm.get("status", "unknown"),
-            })
+                "relevance": relevance,
+            }
+            # Active and universal get full synopsis; background gets minimal
+            if relevance != "background":
+                entry["status"] = fm.get("status", "unknown")
+                entry["tags"] = fm.get("tags", [])
+            matches.append(entry)
+
+        # Sort: active first, universal second, background last
+        relevance_order = {"active": 0, "universal": 1, "background": 2}
+        matches.sort(key=lambda m: relevance_order.get(m["relevance"], 9))
 
         return matches
 
@@ -221,18 +278,16 @@ class BrainVault:
 
     def _resolve_link(self, target: str) -> bool:
         """Check whether a wiki-link target resolves to an existing file."""
-        # Direct path (e.g. "systems/S-3")
+        # Direct path (e.g. "systems/storage-layer")
         for ext in ("", ".md", ".yml"):
             if (self.root / f"{target}{ext}").exists():
                 return True
-        # Bare ID (e.g. "S-3") — search entity folders
+        # Bare slug — search all entity folders
         leaf = target.rsplit("/", 1)[-1]
-        for prefix in ENTITY_PREFIXES:
-            if leaf.startswith(prefix + "-"):
-                folder = ENTITY_PREFIXES[prefix]
-                for ext in (".md", ".yml"):
-                    if (self.root / folder / f"{leaf}{ext}").exists():
-                        return True
+        for folder_name in self._entity_folders():
+            for ext in (".md", ".yml"):
+                if (self.root / folder_name / f"{leaf}{ext}").exists():
+                    return True
         return False
 
     def _validate_links(self, text: str) -> list[str]:
