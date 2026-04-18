@@ -20,7 +20,13 @@ from tbtwd_obsidian_mcp.storage import BrainVault
 
 mcp = FastMCP(
     "tbtwd-obsidian-mcp",
-    instructions="Scoped retrieval over The Brain That Wouldn't Die memory vault",
+    instructions=(
+        "Persistent memory vault for The Brain That Wouldn't Die. "
+        "Start every session with get_brief for orientation. "
+        "Use query to find entities by type/status/tag, get_context to drill in, "
+        "and update_memory to persist changes (auto-commits to GitHub). "
+        "Entities are organized by type: goal, system, concept, decision, feature, drift."
+    ),
 )
 
 
