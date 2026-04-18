@@ -20,13 +20,43 @@ from tbtwd_obsidian_mcp.storage import BrainVault
 
 mcp = FastMCP(
     "tbtwd-obsidian-mcp",
-    instructions=(
-        "Persistent memory vault for The Brain That Wouldn't Die. "
-        "Start every session with get_brief for orientation. "
-        "Use query to find entities by type/status/tag, get_context to drill in, "
-        "and update_memory to persist changes (auto-commits to GitHub). "
-        "Entities are organized by type: goal, system, concept, decision, feature, drift."
-    ),
+    instructions="""\
+Persistent memory vault for The Brain That Wouldn't Die.
+
+SESSION START: Always call get_brief first. It returns the active project, goals, \
+focus area, and backlog — your L0 orientation context.
+
+READING:
+- list_types: discover entity categories (goal, system, concept, decision, feature, drift) with counts.
+- query: find entities by entity_type, status, tag, or project. Results sorted by project relevance.
+- get_context: drill into an entity by name, frontmatter ID, or GUID. Returns full content + linked synopses.
+- check_links: scan for broken [[wiki-links]].
+
+WHEN TO READ:
+- Before design decisions — check if a related decision or concept exists.
+- Before implementing — read the relevant goal and system entities.
+- When the user references something that might be in the vault — look it up.
+- Follow [[wiki-links]] in entity bodies to discover related context.
+
+WRITING:
+- update_memory: update an entity's YAML frontmatter. Auto-validates links, commits, and pushes to GitHub.
+
+WHEN TO WRITE:
+- Status changes: when work moves forward, update status.
+- Decisions: when a design choice is made, persist it.
+- Drift: when open questions or risks surface, flag them.
+- Metadata: when new relationships emerge, update tags, serves, depends-on.
+
+RULES:
+- Don't fabricate entity content — read first, update what exists.
+- Don't skip get_brief — orientation before action.
+- Don't update guid fields — permanent identifiers.
+- Don't bulk-update without user awareness — mention what you're persisting.
+
+ENTITY STRUCTURE: Entities live in type folders (concept/, decision/, drift/, feature/, \
+goal/, system/). Each is a markdown file with YAML frontmatter (guid, id, title, status, \
+type, project, tags, serves, depends-on) and a markdown body with [[wiki-links]].\
+""",
 )
 
 
