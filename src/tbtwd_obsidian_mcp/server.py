@@ -53,6 +53,19 @@ def get_brief() -> str:
 
 
 @mcp.tool()
+def list_types() -> str:
+    """Return the type registry with descriptions and entity counts.
+
+    Shows all entity types defined in the vault (e.g. goal, system, concept)
+    with their descriptions, icons, and how many entities each contains.
+    Useful for orientation and discovering what kinds of entities exist.
+    """
+    vault = _get_vault()
+    types = vault.read_types()
+    return json.dumps(types, indent=2, default=str)
+
+
+@mcp.tool()
 def get_context(entity_id: str) -> str:
     """Return the full entity for the given ID plus one-level-deep linked synopses.
 
@@ -87,7 +100,7 @@ def query(
         tag: Filter by tag (e.g. "combat", "core-gameplay").
         goal: Filter by linked goal (e.g. "G-2").
         status: Filter by status (e.g. "In Progress", "concept").
-        entity_type: Filter by entity folder (e.g. "systems", "goals", "decisions", "features", "drift").
+        entity_type: Filter by type folder (e.g. "system", "goal", "decision", "concept", "feature", "drift").
         project: Override the active project for relevance sorting. Defaults to active-project from brief.yml.
 
     Returns a compact list of matching IDs with one-line synopses.

@@ -15,8 +15,8 @@ import yaml
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
 _WIKILINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
 
-# Folders to skip when scanning for entity subfolders
-_IGNORED_FOLDERS: set[str] = {"Templates"}
+# Root-level items that are not type folders
+_IGNORED_ROOTS: set[str] = {".obsidian", ".vscode", ".git", "Templates"}
 
 
 def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
@@ -36,8 +36,14 @@ def _serialize_frontmatter(fm: dict[str, Any], body: str) -> str:
 
 
 def extract_wikilinks(text: str) -> list[str]:
-    """Return all [[wiki-link]] targets found in *text*."""
-    return _WIKILINK_RE.findall(text)
+    """Return all [[wiki-link]] targets found in *text*.
+
+    Skips links inside fenced code blocks and inline code spans.
+    """
+    # Strip fenced code blocks first, then inline code spans
+    stripped = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
+    stripped = re.sub(r"`[^`]+`", "", stripped)
+    return _WIKILINK_RE.findall(stripped)
 
 
 # ---------------------------------------------------------------------------
@@ -85,45 +91,68 @@ class BrainVault:
             return "active"
         return "background"
 
-    # -- entity files ------------------------------------------------------
+    # -- types.yml registry ------------------------------------------------
 
-    def _entity_folders(self) -> list[str]:
-        """Discover all entity subfolders dynamically (any non-hidden, non-ignored directory)."""
+    def read_types(self) -> dict[str, Any]:
+        """Return the parsed type registry from types.yml.
+
+        Each key is a type name (e.g. 'goal') with description, icon, and
+        a count of entities currently in that folder.
+        """
+        types_path = self.root / "types.yml"
+        if not types_path.exists():
+            raise FileNotFoundError("types.yml not found in vault root")
+        registry = yaml.safe_load(types_path.read_text(encoding="utf-8")) or {}
+
+        # Enrich with entity counts
+        for type_name, meta in registry.items():
+            folder = self.root / type_name
+            if folder.is_dir():
+                meta["count"] = sum(
+                    1 for p in folder.iterdir()
+                    if p.is_file() and p.suffix == ".md" and p.name != "_index.md"
+                )
+            else:
+                meta["count"] = 0
+        return registry
+
+    # -- type folders & entity files ----------------------------------------
+
+    def _type_folders(self) -> list[str]:
+        """Return the names of all type-based subfolders (e.g. goal, system)."""
         return [
             d.name
             for d in self.root.iterdir()
-            if d.is_dir() and not d.name.startswith(".") and d.name not in _IGNORED_FOLDERS
+            if d.is_dir() and d.name not in _IGNORED_ROOTS and not d.name.startswith(".")
         ]
 
     def _iter_entity_files(self) -> list[tuple[str, Path]]:
-        """Return (subfolder_name, path) for every entity file in the vault."""
+        """Return (type_folder, path) for every .md entity file in type folders."""
         results: list[tuple[str, Path]] = []
-        for folder_name in self._entity_folders():
+        for folder_name in sorted(self._type_folders()):
             folder = self.root / folder_name
-            for p in folder.iterdir():
-                if p.suffix in (".md", ".yml") and p.is_file():
+            for p in sorted(folder.iterdir()):
+                if p.is_file() and p.suffix == ".md" and p.name != "_index.md":
                     results.append((folder_name, p))
         return results
 
     def _resolve_entity_path(self, identifier: str) -> Path | None:
-        """Resolve an entity by ID (e.g. 'S-1'), slug (e.g. 'storage-layer'),
-        or path (e.g. 'systems/storage-layer') to its file path.
+        """Resolve an entity by filename stem (e.g. 'Storage Layer'),
+        by type/filename path (e.g. 'system/Storage Layer'),
+        or by frontmatter id (e.g. 'S-1').
         """
-        # If identifier contains a slash, treat as folder/slug
-        if "/" in identifier:
-            folder, slug = identifier.rsplit("/", 1)
-            for ext in ("", ".md", ".yml"):
-                p = self.root / folder / f"{slug}{ext}"
-                if p.exists():
-                    return p
-            return None
+        # Direct path match (e.g. "system/Storage Layer" or "system/Storage Layer.md")
+        for ext in ("", ".md"):
+            p = self.root / f"{identifier}{ext}"
+            if p.exists() and p.is_file():
+                return p
 
-        # Try matching by filename slug across all entity folders
+        # Match by filename stem across all type folders
         for _, path in self._iter_entity_files():
             if path.stem == identifier:
                 return path
 
-        # Try matching by frontmatter id field
+        # Match by frontmatter id field
         for _, path in self._iter_entity_files():
             text = path.read_text(encoding="utf-8")
             fm, _ = _parse_frontmatter(text)
@@ -193,7 +222,7 @@ class BrainVault:
         entity_type: str | None = None,
         project: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Scan frontmatter across all entity files. Return matching synopses.
+        """Scan frontmatter across all concept files. Return matching synopses.
 
         Results are sorted by project relevance: active project first,
         then universal (no project field), then background.
@@ -207,9 +236,9 @@ class BrainVault:
             text = path.read_text(encoding="utf-8")
             fm, _ = _parse_frontmatter(text)
 
-            # Filter by entity_type (folder-based)
+            # Filter by entity_type (matches folder name)
             if entity_type:
-                if folder_name != entity_type.lower():
+                if entity_type.lower() != folder_name.lower():
                     continue
 
             # Filter by status
@@ -278,16 +307,16 @@ class BrainVault:
 
     def _resolve_link(self, target: str) -> bool:
         """Check whether a wiki-link target resolves to an existing file."""
-        # Direct path (e.g. "systems/storage-layer")
-        for ext in ("", ".md", ".yml"):
+        # Strip Obsidian pipe alias: [[target|display text]]
+        target = target.split("|", 1)[0].strip()
+        # Direct path match (e.g. "system/Storage Layer")
+        for ext in ("", ".md"):
             if (self.root / f"{target}{ext}").exists():
                 return True
-        # Bare slug — search all entity folders
-        leaf = target.rsplit("/", 1)[-1]
-        for folder_name in self._entity_folders():
-            for ext in (".md", ".yml"):
-                if (self.root / folder_name / f"{leaf}{ext}").exists():
-                    return True
+        # Obsidian-style: match by filename across all type folders
+        for _, path in self._iter_entity_files():
+            if path.stem == target:
+                return True
         return False
 
     def _validate_links(self, text: str) -> list[str]:
@@ -302,8 +331,13 @@ class BrainVault:
         """Scan all files for broken wiki-links. Return [{source, target}]."""
         broken: list[dict[str, str]] = []
 
-        # Check all entity files
-        for _, path in self._iter_entity_files():
+        # Collect all files to check: entity files + brief.yml
+        files_to_check: list[Path] = [path for _, path in self._iter_entity_files()]
+        brief = self.root / "brief.yml"
+        if brief.exists():
+            files_to_check.append(brief)
+
+        for path in files_to_check:
             text = path.read_text(encoding="utf-8")
             for link in extract_wikilinks(text):
                 if not self._resolve_link(link):
@@ -311,16 +345,5 @@ class BrainVault:
                         "source": str(path.relative_to(self.root)),
                         "target": link,
                     })
-
-        # Also check brief.yml and any root-level .md files
-        for p in self.root.iterdir():
-            if p.is_file() and p.suffix in (".md", ".yml", ".yaml"):
-                text = p.read_text(encoding="utf-8")
-                for link in extract_wikilinks(text):
-                    if not self._resolve_link(link):
-                        broken.append({
-                            "source": p.name,
-                            "target": link,
-                        })
 
         return broken
