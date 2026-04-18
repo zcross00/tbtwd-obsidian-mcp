@@ -199,7 +199,7 @@ class BrainVault:
     def _resolve_entity_path(self, identifier: str) -> Path | None:
         """Resolve an entity by filename stem (e.g. 'Storage Layer'),
         by type/filename path (e.g. 'system/Storage Layer'),
-        or by frontmatter id (e.g. 'S-1').
+        by frontmatter id (e.g. 'S-1'), or by guid.
         """
         # Direct path match (e.g. "system/Storage Layer" or "system/Storage Layer.md")
         for ext in ("", ".md"):
@@ -212,17 +212,17 @@ class BrainVault:
             if path.stem == identifier:
                 return path
 
-        # Match by frontmatter id field
+        # Match by frontmatter id or guid
         for _, path in self._iter_entity_files():
             text = path.read_text(encoding="utf-8")
             fm, _ = _parse_frontmatter(text)
-            if fm.get("id") == identifier:
+            if fm.get("id") == identifier or fm.get("guid") == identifier:
                 return path
 
         return None
 
     def read_entity(self, identifier: str) -> dict[str, Any]:
-        """Read an entity file and return {id, frontmatter, body, links, path}."""
+        """Read an entity file and return {guid, id, frontmatter, body, links, path}."""
         path = self._resolve_entity_path(identifier)
         if path is None:
             raise FileNotFoundError(f"Entity '{identifier}' not found in vault")
@@ -232,6 +232,7 @@ class BrainVault:
         links = extract_wikilinks(text)
 
         return {
+            "guid": fm.get("guid"),
             "id": fm.get("id", path.stem),
             "frontmatter": fm,
             "body": body.strip(),
@@ -247,6 +248,7 @@ class BrainVault:
             return None
         fm = entity["frontmatter"]
         return {
+            "guid": entity["guid"],
             "id": entity["id"],
             "title": fm.get("title", entity["id"]),
             "status": fm.get("status", "unknown"),
@@ -322,6 +324,7 @@ class BrainVault:
             relevance = self._entity_relevance(fm, active)
 
             entry: dict[str, Any] = {
+                "guid": fm.get("guid"),
                 "id": entity_id,
                 "title": fm.get("title", entity_id),
                 "relevance": relevance,
