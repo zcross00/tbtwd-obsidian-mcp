@@ -12,5 +12,10 @@ dependencies = [
     "pyyaml>=6.0",
 ]
 
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0",
+]
+
 [project.scripts]
 tbtwd-obsidian-mcp = "tbtwd_obsidian_mcp.server:main"
