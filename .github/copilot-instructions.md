@@ -37,6 +37,8 @@ The vault contains refined procedures for common workflows. **Before acting on a
 - **[[Design Synchronization]]** — *triggers: update design, sync design, architecture changed* — keeping component designs current after changes
 - **[[Knowledge Cross-Pollination]]** — *triggers: enrich, cross-reference, connect, link entities* — enriching existing entities with information from other entities
 - **[[Decision Management]]** — *triggers: decide, choose, trade-off, alternative, which approach* — recognizing, creating, surfacing, resolving, and reversing decision entities
+- **[[Knowledge Curation]]** — *triggers: audit, curate, validate, check tags, maintenance, stale* — periodic vault audit: schema validation, tag coverage, status lifecycle, relationship integrity
+- **[[Session Recovery]]** — *triggers: compact, resume, recover, handoff, continue, lost context* — re-establishing full context after compaction or session handoff
 
 ### Procedure Recognition
 

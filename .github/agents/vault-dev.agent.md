@@ -65,6 +65,8 @@ The vault contains refined procedures for common workflows. **Before acting on a
 | [[Design Synchronization]] | update design, sync design, component changed, architecture changed | Keeping component designs current after implementation work |
 | [[Knowledge Cross-Pollination]] | enrich, cross-reference, connect, weave, link entities | Enriching existing entities with information from other entities — weaving in answers, context, and enhancements |
 | [[Decision Management]] | decide, choose, pick, trade-off, alternative, option, which approach | Recognizing decision points, creating decision entities, surfacing past decisions during work, resolving and reversing decisions |
+| [[Knowledge Curation]] | audit, curate, validate schema, check tags, maintenance, stale | Periodic vault audit — schema validation, tag coverage, type boundaries, status lifecycle, relationship integrity |
+| [[Session Recovery]] | compact, resume, recover, handoff, continue, lost context | Re-establishing full context after compaction, session handoff, or conversation truncation |
 
 These are canonical processes, not rigid scripts. Apply them intelligently based on context. Skip steps that clearly don't apply. Add steps when the situation warrants it.
 
