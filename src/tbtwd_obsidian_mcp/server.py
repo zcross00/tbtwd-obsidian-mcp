@@ -246,22 +246,39 @@ def update_memory(entity_id: str, fields: dict) -> str:
 
 
 @mcp.tool()
-def update_body(entity_id: str, section: str, content: str) -> str:
-    """Update or create a named section in an entity's markdown body.
+def update_body(
+    entity_id: str,
+    field: str,
+    content: str | list[str] | None = None,
+) -> str:
+    """Set or delete a field in an entity's markdown body.
 
-    If the section (## heading) already exists, replaces its content.
-    If it doesn't exist, inserts it before ## Related (or appends at end).
+    The server owns all document formatting. You provide the semantic field
+    name and content — the server maps it to the correct ``## Heading``,
+    enforces canonical section ordering, and manages spacing.
+
+    **Set a field:** ``update_body("Storage Layer", field="intent", content="...")``
+    **Delete a field:** ``update_body("Storage Layer", field="intent")``
+    **Set preamble:** ``update_body("Storage Layer", field="preamble", content="...")``
+    **Set related:** ``update_body("Storage Layer", field="related", content=["Foo", "Bar"])``
+
+    Fields are validated against the entity type's schema (body-schema.yml).
+    Unknown fields are rejected with a ValueError listing the allowed fields.
 
     Args:
         entity_id: Entity identifier — a filename slug, path, frontmatter ID, or GUID.
-        section: Section heading name without the ## prefix (e.g. "Applicable Rules").
-        content: Markdown content for the section body. Do not include the heading —
-            it is managed automatically.
+        field: Semantic field name from the body schema (e.g. "intent", "rationale",
+            "preamble", "related", "constraint", "applicable_rules").
+            The server maps this to the correct ## heading automatically.
+        content: Field content. For most fields, a markdown string (no heading needed).
+            For "related", a list of entity names (no [[]] wrapping needed).
+            Omit or pass None to delete the field.
 
-    Returns confirmation with action taken (created or replaced) and any link warnings.
+    Returns confirmation with action (created, replaced, deleted, or not_found)
+    and any link warnings.
     """
     vault = _get_vault()
-    result = vault.update_body(entity_id, section, content)
+    result = vault.update_body(entity_id, field=field, content=content)
     return json.dumps(result, indent=2, default=str)
 
 

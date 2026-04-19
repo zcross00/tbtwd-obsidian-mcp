@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import hashlib
 import logging
 import re
@@ -64,14 +65,21 @@ class BrainVault:
 
     _CACHE_ROOT = Path.home() / ".cache" / "tbtwd-brain"
 
+    _PUSH_INTERVAL = 60  # seconds between batched pushes
+
     def __init__(
         self,
         *,
         repo_url: str | None = None,
         vault_path: str | Path | None = None,
+        push_interval: float | None = None,
     ) -> None:
         self._repo_url = repo_url
         self._remote_verified = False
+        self._git_lock = threading.Lock()
+        self._has_unpushed = False
+        self._push_stop = threading.Event()
+        self._push_interval = push_interval if push_interval is not None else self._PUSH_INTERVAL
         log.debug("BrainVault.__init__(repo_url=%s, vault_path=%s)", repo_url, vault_path)
 
         if vault_path:
@@ -91,6 +99,16 @@ class BrainVault:
             raise ValueError(
                 "Provide at least one of repo_url or vault_path."
             )
+
+        # Start the batched push timer if we have a remote
+        self._push_thread: threading.Thread | None = None
+        if self._repo_url:
+            self._push_thread = threading.Thread(
+                target=self._push_timer_loop, daemon=True
+            )
+            self._push_thread.start()
+            atexit.register(self._shutdown_push)
+
         log.debug("BrainVault ready, root=%s", self.root)
 
     # -- git operations ----------------------------------------------------
@@ -143,20 +161,19 @@ class BrainVault:
         self._remote_verified = True
 
     def _commit_and_push(self, path: Path, message: str) -> dict[str, Any]:
-        """Stage a file, commit, and push to main. Returns git status info.
+        """Stage a file, commit, and mark for batched push. Returns git status info.
 
-        Push runs in a background thread so the tool response is not blocked
-        by network latency.
+        Commit runs in a background thread so the tool response is not
+        blocked. Push happens on the periodic timer (every 60s).
         """
         return self._commit_and_push_batch([path], message)
 
     def _commit_and_push_batch(self, paths: list[Path], message: str) -> dict[str, Any]:
-        """Stage multiple files, commit once, and push to main.
+        """Stage multiple files, commit once, and mark for batched push.
 
-        Batches all paths into a single git add + commit + push cycle.
-        The entire operation runs in a background thread so it never
-        blocks the tool response — on Windows, git subprocesses called
-        from a stdio-based MCP server can deadlock on pipe buffers.
+        Commit runs in a background thread with a lock to serialise git
+        operations.  Push is deferred to the periodic push timer, which
+        batches all pending commits into a single push.
         """
         info: dict[str, Any] = {"git": "skipped"}
 
@@ -168,40 +185,67 @@ class BrainVault:
 
         rels = [str(p.relative_to(self.root)) for p in paths]
 
-        def _bg_commit_and_push() -> None:
+        def _bg_commit() -> None:
             try:
-                # Ensure remote is configured
-                self._ensure_remote(self._repo_url)
-
-                # Stage all files
-                result = self._git("add", *rels)
-                if result.returncode != 0:
-                    log.warning("git add failed: %s", result.stderr.strip())
-                    return
-
-                # Commit
-                result = self._git("commit", "-m", message)
-                if result.returncode != 0:
-                    combined = (result.stdout + result.stderr).lower()
-                    if "nothing to commit" in combined or "nothing added to commit" in combined:
-                        log.debug("nothing to commit")
+                with self._git_lock:
+                    # Stage all files
+                    result = self._git("add", *rels)
+                    if result.returncode != 0:
+                        log.warning("git add failed: %s", result.stderr.strip())
                         return
-                    log.warning("git commit failed: %s", result.stderr.strip() or result.stdout.strip())
-                    return
 
-                # Push
-                result = self._git("push", "origin", "main")
-                if result.returncode != 0:
-                    log.warning("background push failed: %s", result.stderr.strip())
-                else:
-                    log.info("background push succeeded for %d files", len(rels))
+                    # Commit
+                    result = self._git("commit", "-m", message)
+                    if result.returncode != 0:
+                        combined = (result.stdout + result.stderr).lower()
+                        if "nothing to commit" in combined or "nothing added to commit" in combined:
+                            log.debug("nothing to commit")
+                            return
+                        log.warning("git commit failed: %s", result.stderr.strip() or result.stdout.strip())
+                        return
+
+                    self._has_unpushed = True
+                    log.info("committed %d files, push pending", len(rels))
             except Exception:
-                log.exception("background commit+push error")
+                log.exception("background commit error")
 
-        threading.Thread(target=_bg_commit_and_push, daemon=True).start()
+        threading.Thread(target=_bg_commit, daemon=True).start()
         info["git"] = "committed_push_pending"
         info["files_staged"] = len(paths)
         return info
+
+    def _push_timer_loop(self) -> None:
+        """Periodically push unpushed commits to origin.
+
+        Runs as a daemon thread.  Wakes every ``_push_interval`` seconds
+        (default 60) and, if there are unpushed commits, does a single
+        ``git push origin main``.
+        """
+        while not self._push_stop.wait(self._push_interval):
+            self._try_push()
+
+    def _try_push(self) -> None:
+        """Push to remote if there are unpushed commits."""
+        if not self._has_unpushed or not self._repo_url:
+            return
+        with self._git_lock:
+            if not self._has_unpushed:
+                return  # another thread pushed while we waited for the lock
+            try:
+                self._ensure_remote(self._repo_url)
+                result = self._git("push", "origin", "main")
+                if result.returncode != 0:
+                    log.warning("batched push failed: %s", result.stderr.strip())
+                else:
+                    self._has_unpushed = False
+                    log.info("batched push succeeded")
+            except Exception:
+                log.exception("batched push error")
+
+    def _shutdown_push(self) -> None:
+        """Attempt a final push on interpreter shutdown."""
+        self._push_stop.set()
+        self._try_push()
 
     # -- brief.yml (L0) ----------------------------------------------------
 
@@ -526,20 +570,34 @@ class BrainVault:
     def update_body(
         self,
         entity_id: str,
-        section: str,
-        content: str,
+        field: str,
+        content: str | list[str] | None = None,
     ) -> dict[str, Any]:
-        """Update or create a named section in an entity's markdown body.
+        """Set or delete a named field in an entity's body.
 
-        If the section (## heading) exists, replaces its content.
-        If it doesn't exist, inserts before ## Related (or appends at end).
+        The body schema (``body-schema.yml``) defines what fields are valid
+        for each entity type, their canonical ordering, and how they map
+        to ``## Heading`` sections in the markdown document.
 
         Args:
             entity_id: Entity identifier (slug, path, frontmatter ID, or GUID).
-            section: Section heading name (without ## prefix).
-            content: Markdown content for the section body (no heading).
+            field: Semantic field name from the body schema (e.g. ``"intent"``,
+                ``"preamble"``, ``"related"``).  The server maps this to the
+                correct ``## Heading`` in the document.
+            content: Field content.  For most fields this is a markdown string.
+                For ``"related"`` this is a **list of entity names** (no ``[[]]``
+                wrapping needed — the server formats them).
+                Pass ``None`` or omit to **delete** the field.
 
-        Returns confirmation with action taken, warnings, and git info.
+        Returns:
+            Confirmation dict with ``updated``, ``field``, ``action``
+            (``created`` | ``replaced`` | ``deleted`` | ``not_found``),
+            ``warnings``, and git info.
+
+        Raises:
+            FileNotFoundError: If entity_id doesn't resolve.
+            ValueError: If the field is not in the type's canonical schema
+                (only enforced for set operations, not deletes).
         """
         path = self._resolve_entity_path(entity_id)
         if path is None:
@@ -548,33 +606,54 @@ class BrainVault:
         text = path.read_text(encoding="utf-8")
         fm, body = _parse_frontmatter(text)
 
-        # Build the new section text
-        section_text = f"## {section}\n\n{content.rstrip()}\n"
+        # Load schema and determine delete intent early
+        schema = self._load_body_schema()
+        entity_type = fm.get("type", ["concept"])
+        if isinstance(entity_type, list):
+            entity_type = entity_type[0]
+        allowed_fields = schema.get("types", {}).get(entity_type, [])
 
-        # Find existing section boundaries
-        pattern = re.compile(
-            rf"^## {re.escape(section)}\s*\n(.*?)(?=^## |\Z)",
-            re.MULTILINE | re.DOTALL,
-        )
-        match = pattern.search(body)
+        is_delete = content is None or (
+            isinstance(content, str) and content.strip() == ""
+        ) or (isinstance(content, list) and len(content) == 0)
 
-        if match:
-            # Replace the existing section (heading + content)
-            body = body[: match.start()] + section_text + "\n" + body[match.end():]
-            action = "replaced"
-        else:
-            # Insert before ## Related if it exists, otherwise append
-            related_match = re.search(r"^## Related\s*\n", body, re.MULTILINE)
-            if related_match:
-                body = (
-                    body[: related_match.start()]
-                    + section_text
-                    + "\n"
-                    + body[related_match.start() :]
+        # Strict validation only for set operations — deletes can target
+        # any existing heading (needed for cleaning up orphan sections)
+        if not is_delete and field not in allowed_fields:
+            raise ValueError(
+                f"Field '{field}' is not valid for entity type '{entity_type}'. "
+                f"Allowed fields: {', '.join(allowed_fields)}"
+            )
+
+        heading = self._heading_for_field(field, schema)
+        field_def = schema.get("fields", {}).get(field, {})
+        is_preamble = heading is None  # position: first
+        is_wikilinks = field_def.get("format") == "wikilinks"
+
+        # Format content for wikilink fields (e.g. related)
+        if is_wikilinks and not is_delete:
+            if not isinstance(content, list):
+                raise ValueError(
+                    f"Field '{field}' requires a list of entity names, "
+                    f"got {type(content).__name__}"
                 )
-            else:
-                body = body.rstrip() + "\n\n" + section_text
-            action = "created"
+            formatted = "\n".join(
+                f"- [[{name}]]" for name in content
+            )
+        elif not is_delete:
+            formatted = content.rstrip() if isinstance(content, str) else str(content)
+
+        if is_preamble:
+            action = self._update_preamble(body, formatted if not is_delete else None)
+            body = action.pop("body")
+        elif is_delete:
+            action = self._delete_section(body, heading)
+            body = action.pop("body")
+        else:
+            action = self._upsert_section(
+                body, heading, formatted, field, allowed_fields, schema
+            )
+            body = action.pop("body")
 
         new_text = _serialize_frontmatter(fm, body)
         warnings = self._validate_links(new_text)
@@ -582,16 +661,135 @@ class BrainVault:
         path.write_text(new_text, encoding="utf-8")
 
         git_info = self._commit_and_push(
-            path, f"update body: {entity_id} [{section}]"
+            path, f"update body: {entity_id} [{field}]"
         )
 
         return {
             "updated": entity_id,
-            "section": section,
-            "action": action,
+            "field": field,
+            "action": action["action"],
             "warnings": warnings,
             **git_info,
         }
+
+    # -- body editing helpers ----------------------------------------------
+
+    def _update_preamble(
+        self, body: str, content: str | None
+    ) -> dict[str, Any]:
+        """Set or delete the preamble (text between # Title and first ##)."""
+        h1_match = re.search(r"^# .+\n", body, re.MULTILINE)
+        first_h2 = self._SECTION_RE.search(body)
+
+        start = h1_match.end() if h1_match else 0
+        end = first_h2.start() if first_h2 else len(body)
+        existing = body[start:end].strip()
+
+        if content is None:
+            # Delete preamble
+            body = body[:start] + "\n" + body[end:]
+            return {"body": body, "action": "deleted" if existing else "not_found"}
+
+        preamble_text = f"\n{content}\n\n"
+        action = "replaced" if existing else "created"
+        body = body[:start] + preamble_text + body[end:]
+        return {"body": body, "action": action}
+
+    def _delete_section(
+        self, body: str, heading: str
+    ) -> dict[str, Any]:
+        """Delete a ## section entirely (heading + content)."""
+        pattern = re.compile(
+            rf"^## {re.escape(heading)}\s*\n(.*?)(?=^## |\Z)",
+            re.MULTILINE | re.DOTALL,
+        )
+        match = pattern.search(body)
+        if not match:
+            return {"body": body, "action": "not_found"}
+        body = body[: match.start()] + body[match.end():]
+        return {"body": body, "action": "deleted"}
+
+    def _upsert_section(
+        self,
+        body: str,
+        heading: str,
+        content: str,
+        field: str,
+        allowed_fields: list[str],
+        schema: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Create or replace a ## section at the correct canonical position."""
+        section_text = f"## {heading}\n\n{content}\n"
+
+        # Check if section already exists
+        pattern = re.compile(
+            rf"^## {re.escape(heading)}\s*\n(.*?)(?=^## |\Z)",
+            re.MULTILINE | re.DOTALL,
+        )
+        match = pattern.search(body)
+
+        if match:
+            body = body[: match.start()] + section_text + "\n" + body[match.end():]
+            return {"body": body, "action": "replaced"}
+
+        # New section — find the canonical insertion point
+        insert_pos = self._find_insertion_point(
+            body, field, allowed_fields, schema
+        )
+        body = body[:insert_pos] + section_text + "\n" + body[insert_pos:]
+        return {"body": body, "action": "created"}
+
+    def _find_insertion_point(
+        self,
+        body: str,
+        field: str,
+        allowed_fields: list[str],
+        schema: dict[str, Any],
+    ) -> int:
+        """Find where to insert a new section to maintain canonical order.
+
+        Scans the body for existing sections and finds the position after
+        the last section that should come before this field in the schema
+        order.
+        """
+        field_idx = allowed_fields.index(field)
+
+        # Build heading→position map for existing sections in the body
+        section_positions: list[tuple[int, int, str]] = []  # (order, pos, heading)
+        for m in re.finditer(r"^## (.+?)\s*$", body, re.MULTILINE):
+            h = m.group(1)
+            f = self._field_for_heading(h, schema)
+            if f in allowed_fields:
+                order = allowed_fields.index(f)
+            else:
+                # Unknown field — put it at end-1 (before related)
+                order = len(allowed_fields) - 1
+            section_positions.append((order, m.start(), h))
+
+        # Find the last existing section that should appear before this field
+        best_pos = None
+        for order, pos, _h in section_positions:
+            if order < field_idx:
+                # This section comes before our field — insert after it
+                # Find the end of this section
+                pat = re.compile(
+                    rf"^## {re.escape(_h)}\s*\n(.*?)(?=^## |\Z)",
+                    re.MULTILINE | re.DOTALL,
+                )
+                sm = pat.search(body, pos)
+                if sm:
+                    best_pos = sm.end()
+
+        if best_pos is not None:
+            return best_pos
+
+        # Find the first existing section that should appear after this field
+        for order, pos, _h in sorted(section_positions, key=lambda x: x[0]):
+            if order > field_idx:
+                return pos
+
+        # No reference points — append at end
+        return len(body.rstrip()) + 1
 
     # -- archival ----------------------------------------------------------
 
@@ -657,7 +855,7 @@ class BrainVault:
     def _archive_commit_and_push(
         self, old_rel: str, new_rel: str, message: str
     ) -> dict[str, Any]:
-        """Stage a file move (rm old + add new), commit, and push."""
+        """Stage a file move (rm old + add new), commit, and mark for batched push."""
         info: dict[str, Any] = {"git": "skipped"}
 
         if not self._repo_url:
@@ -665,37 +863,33 @@ class BrainVault:
 
         def _bg() -> None:
             try:
-                self._ensure_remote(self._repo_url)
+                with self._git_lock:
+                    # Stage the removal and the addition
+                    result = self._git("rm", "--cached", old_rel)
+                    if result.returncode != 0:
+                        # File may already be untracked; try plain add
+                        log.debug("git rm --cached failed, continuing: %s", result.stderr.strip())
 
-                # Stage the removal and the addition
-                result = self._git("rm", "--cached", old_rel)
-                if result.returncode != 0:
-                    # File may already be untracked; try plain add
-                    log.debug("git rm --cached failed, continuing: %s", result.stderr.strip())
-
-                result = self._git("add", new_rel)
-                if result.returncode != 0:
-                    log.warning("git add failed: %s", result.stderr.strip())
-                    return
-
-                # Also stage the removal from the index
-                result = self._git("add", "-A", old_rel)
-
-                result = self._git("commit", "-m", message)
-                if result.returncode != 0:
-                    combined = (result.stdout + result.stderr).lower()
-                    if "nothing to commit" in combined:
+                    result = self._git("add", new_rel)
+                    if result.returncode != 0:
+                        log.warning("git add failed: %s", result.stderr.strip())
                         return
-                    log.warning("git commit failed: %s", result.stderr.strip() or result.stdout.strip())
-                    return
 
-                result = self._git("push", "origin", "main")
-                if result.returncode != 0:
-                    log.warning("background push failed: %s", result.stderr.strip())
-                else:
-                    log.info("background push succeeded for archive")
+                    # Also stage the removal from the index
+                    result = self._git("add", "-A", old_rel)
+
+                    result = self._git("commit", "-m", message)
+                    if result.returncode != 0:
+                        combined = (result.stdout + result.stderr).lower()
+                        if "nothing to commit" in combined:
+                            return
+                        log.warning("git commit failed: %s", result.stderr.strip() or result.stdout.strip())
+                        return
+
+                    self._has_unpushed = True
+                    log.info("committed archive, push pending")
             except Exception:
-                log.exception("background archive commit+push error")
+                log.exception("background archive commit error")
 
         threading.Thread(target=_bg, daemon=True).start()
         info["git"] = "committed_push_pending"
@@ -877,6 +1071,38 @@ class BrainVault:
         if not path.exists():
             raise FileNotFoundError("extraction-schema.yml not found in vault root")
         return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+
+    # -- body schema -------------------------------------------------------
+
+    def _load_body_schema(self) -> dict[str, Any]:
+        """Return the parsed body schema from body-schema.yml.
+
+        Returns {"fields": {...}, "types": {...}} defining canonical
+        section structure per entity type.
+        """
+        path = self.root / "body-schema.yml"
+        if not path.exists():
+            raise FileNotFoundError("body-schema.yml not found in vault root")
+        return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+
+    def _heading_for_field(
+        self, field: str, schema: dict[str, Any]
+    ) -> str | None:
+        """Return the ``## Heading`` text for a field, or None for preamble."""
+        field_def = schema.get("fields", {}).get(field, {})
+        if field_def.get("position") == "first":
+            return None  # preamble — no heading
+        return field_def.get("heading", field.replace("_", " ").title())
+
+    def _field_for_heading(
+        self, heading: str, schema: dict[str, Any]
+    ) -> str:
+        """Return the field name for a ``## Heading``, or a slug fallback."""
+        for fname, fdef in schema.get("fields", {}).items():
+            if fdef.get("heading") == heading:
+                return fname
+        # Fallback: slugify the heading
+        return heading.lower().replace(" ", "_").replace("-", "_")
 
     # -- match_concepts ----------------------------------------------------
 

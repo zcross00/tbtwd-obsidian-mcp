@@ -136,6 +136,49 @@ def vault_dir(tmp_path: Path) -> Path:
         yaml.dump(schema, default_flow_style=False), encoding="utf-8"
     )
 
+    # body-schema.yml
+    body_schema = {
+        "fields": {
+            "preamble": {"position": "first"},
+            "mechanism": {"heading": "Mechanism"},
+            "implications": {"heading": "Implications"},
+            "decision": {"heading": "Decision"},
+            "rationale": {"heading": "Rationale"},
+            "alternatives": {"heading": "Alternatives Considered"},
+            "consequences": {"heading": "Consequences"},
+            "intent": {"heading": "Intent"},
+            "key_files": {"heading": "Key Files"},
+            "architecture": {"heading": "Architecture"},
+            "sub_components": {"heading": "Sub-Components"},
+            "current_state": {"heading": "Current State"},
+            "constraint": {"heading": "Constraint"},
+            "scope": {"heading": "Scope"},
+            "prerequisites": {"heading": "Prerequisites"},
+            "steps": {"heading": "Steps"},
+            "output": {"heading": "Output"},
+            "options": {"heading": "Options"},
+            "blocked_by": {"heading": "Blocked By"},
+            "applicable_rules": {"heading": "Applicable Rules"},
+            "synthesized": {"heading": "Synthesized"},
+            "related": {"heading": "Related", "position": "last", "format": "wikilinks"},
+        },
+        "types": {
+            "concept": ["preamble", "mechanism", "implications", "applicable_rules", "synthesized", "related"],
+            "decision": ["preamble", "decision", "rationale", "alternatives", "consequences", "applicable_rules", "synthesized", "related"],
+            "system": ["preamble", "intent", "key_files", "architecture", "sub_components", "current_state", "applicable_rules", "synthesized", "related"],
+            "pattern": ["preamble", "applicable_rules", "synthesized", "related"],
+            "rule": ["preamble", "constraint", "rationale", "scope", "applicable_rules", "synthesized", "related"],
+            "procedure": ["preamble", "prerequisites", "steps", "output", "applicable_rules", "synthesized", "related"],
+            "lesson": ["preamble", "applicable_rules", "synthesized", "related"],
+            "drift": ["preamble", "options", "blocked_by", "applicable_rules", "synthesized", "related"],
+            "goal": ["preamble", "applicable_rules", "synthesized", "related"],
+            "feature": ["preamble", "applicable_rules", "synthesized", "related"],
+        },
+    }
+    (tmp_path / "body-schema.yml").write_text(
+        yaml.dump(body_schema, default_flow_style=False), encoding="utf-8"
+    )
+
     # Create type folders
     for folder in ["concept", "decision", "goal", "system", "drift", "pattern", "lesson", "rule"]:
         (tmp_path / folder).mkdir()
@@ -829,14 +872,16 @@ class TestUpdateMemory:
 
 
 class TestUpdateBody:
-    def test_create_new_section(self, vault: BrainVault, vault_dir: Path):
+    # -- set (create/replace) ------------------------------------------
+
+    def test_create_field(self, vault: BrainVault, vault_dir: Path):
         result = vault.update_body(
             "Token Efficiency",
-            section="Applicable Rules",
+            field="applicable_rules",
             content="- [[Vault Access Via MCP Only]]",
         )
         assert result["updated"] == "Token Efficiency"
-        assert result["section"] == "Applicable Rules"
+        assert result["field"] == "applicable_rules"
         assert result["action"] == "created"
 
         # Verify section was inserted before ## Related
@@ -845,65 +890,198 @@ class TestUpdateBody:
         related_pos = text.index("## Related")
         assert rules_pos < related_pos
 
-    def test_replace_existing_section(self, vault: BrainVault, vault_dir: Path):
-        # First create the section
+    def test_replace_existing_field(self, vault: BrainVault, vault_dir: Path):
         vault.update_body(
             "Token Efficiency",
-            section="Applicable Rules",
+            field="applicable_rules",
             content="- [[Vault Access Via MCP Only]]",
         )
-        # Then replace it
         result = vault.update_body(
             "Token Efficiency",
-            section="Applicable Rules",
+            field="applicable_rules",
             content="- [[Vault Access Via MCP Only]]\n- [[Storage Layer]]",
         )
         assert result["action"] == "replaced"
 
         text = (vault_dir / "concept" / "Token Efficiency.md").read_text(encoding="utf-8")
         assert "[[Storage Layer]]" in text
-        # Only one ## Applicable Rules heading should exist
         assert text.count("## Applicable Rules") == 1
-
-    def test_create_section_no_related(self, vault: BrainVault, vault_dir: Path):
-        # Test Goal One has no ## Related section
-        result = vault.update_body(
-            "Test Goal One",
-            section="Notes",
-            content="Some additional notes here.",
-        )
-        assert result["action"] == "created"
-
-        text = (vault_dir / "goal" / "Test Goal One.md").read_text(encoding="utf-8")
-        assert "## Notes" in text
-        assert "Some additional notes here." in text
-
-    def test_nonexistent_entity(self, vault: BrainVault):
-        with pytest.raises(FileNotFoundError):
-            vault.update_body("Nonexistent", section="Test", content="test")
-
-    def test_validates_links(self, vault: BrainVault):
-        result = vault.update_body(
-            "Token Efficiency",
-            section="Applicable Rules",
-            content="- [[Nonexistent Rule Entity]]",
-        )
-        assert any("not found" in w for w in result["warnings"])
 
     def test_preserves_other_sections(self, vault: BrainVault, vault_dir: Path):
         result = vault.update_body(
             "Storage Layer",
-            section="Applicable Rules",
+            field="applicable_rules",
             content="- [[Vault Access Via MCP Only]]",
         )
         assert result["action"] == "created"
 
         text = (vault_dir / "system" / "Storage Layer.md").read_text(encoding="utf-8")
-        # Original sections should still be present
         assert "## Intent" in text
         assert "## Related" in text
         assert "## Applicable Rules" in text
         assert "File I/O and YAML parsing" in text
+
+    def test_nonexistent_entity(self, vault: BrainVault):
+        with pytest.raises(FileNotFoundError):
+            vault.update_body("Nonexistent", field="intent", content="test")
+
+    def test_validates_links(self, vault: BrainVault):
+        result = vault.update_body(
+            "Token Efficiency",
+            field="applicable_rules",
+            content="- [[Nonexistent Rule Entity]]",
+        )
+        assert any("not found" in w for w in result["warnings"])
+
+    # -- strict field validation ----------------------------------------
+
+    def test_rejects_invalid_field(self, vault: BrainVault):
+        with pytest.raises(ValueError, match="not valid for entity type"):
+            vault.update_body(
+                "Token Efficiency",
+                field="constraint",
+                content="- some constraint",
+            )
+
+    def test_accepts_valid_field_for_type(self, vault: BrainVault):
+        # constraint is valid for rule entities
+        result = vault.update_body(
+            "Vault Access Via MCP Only",
+            field="constraint",
+            content="- Updated constraint text",
+        )
+        assert result["action"] == "replaced"
+
+    # -- preamble -------------------------------------------------------
+
+    def test_set_preamble(self, vault: BrainVault, vault_dir: Path):
+        result = vault.update_body(
+            "Storage Layer",
+            field="preamble",
+            content="The storage layer handles all file I/O.",
+        )
+        assert result["action"] == "created"
+
+        text = (vault_dir / "system" / "Storage Layer.md").read_text(encoding="utf-8")
+        assert "The storage layer handles all file I/O." in text
+        # Preamble should appear before ## Intent
+        preamble_pos = text.index("The storage layer handles all file I/O.")
+        intent_pos = text.index("## Intent")
+        assert preamble_pos < intent_pos
+
+    def test_replace_preamble(self, vault: BrainVault, vault_dir: Path):
+        # Token Efficiency has preamble content (bullet points)
+        result = vault.update_body(
+            "Token Efficiency",
+            field="preamble",
+            content="New preamble text replacing the bullets.",
+        )
+        assert result["action"] == "replaced"
+
+        text = (vault_dir / "concept" / "Token Efficiency.md").read_text(encoding="utf-8")
+        assert "New preamble text replacing the bullets." in text
+        assert "L0 bootstrap costs" not in text  # Old content gone
+
+    def test_delete_preamble(self, vault: BrainVault, vault_dir: Path):
+        result = vault.update_body(
+            "Token Efficiency",
+            field="preamble",
+        )
+        assert result["action"] == "deleted"
+
+        text = (vault_dir / "concept" / "Token Efficiency.md").read_text(encoding="utf-8")
+        assert "L0 bootstrap costs" not in text
+        assert "## Related" in text  # Other sections preserved
+
+    # -- delete --------------------------------------------------------
+
+    def test_delete_section(self, vault: BrainVault, vault_dir: Path):
+        result = vault.update_body(
+            "Storage Layer",
+            field="intent",
+        )
+        assert result["action"] == "deleted"
+
+        text = (vault_dir / "system" / "Storage Layer.md").read_text(encoding="utf-8")
+        assert "## Intent" not in text
+        assert "## Related" in text  # Other sections preserved
+
+    def test_delete_nonexistent_section(self, vault: BrainVault):
+        result = vault.update_body(
+            "Storage Layer",
+            field="architecture",
+        )
+        assert result["action"] == "not_found"
+
+    def test_delete_non_schema_field(self, vault: BrainVault, vault_dir: Path):
+        # First manually add an orphan heading that isn't in the schema
+        path = vault_dir / "system" / "Storage Layer.md"
+        text = path.read_text(encoding="utf-8")
+        text = text.replace(
+            "## Related",
+            "## Orphan Section\n\nOrphan content\n\n## Related",
+        )
+        path.write_text(text, encoding="utf-8")
+
+        # Delete should work even though 'orphan_section' isn't a valid system field
+        result = vault.update_body("Storage Layer", field="orphan_section")
+        assert result["action"] == "deleted"
+
+        text = path.read_text(encoding="utf-8")
+        assert "## Orphan Section" not in text
+        assert "## Related" in text
+
+    # -- related (wikilinks format) ------------------------------------
+
+    def test_set_related_as_list(self, vault: BrainVault, vault_dir: Path):
+        result = vault.update_body(
+            "Storage Layer",
+            field="related",
+            content=["Token Efficiency", "Architecture Overview"],
+        )
+        assert result["action"] == "replaced"
+
+        text = (vault_dir / "system" / "Storage Layer.md").read_text(encoding="utf-8")
+        assert "- [[Token Efficiency]]" in text
+        assert "- [[Architecture Overview]]" in text
+        assert text.count("## Related") == 1
+
+    def test_related_rejects_string(self, vault: BrainVault):
+        with pytest.raises(ValueError, match="requires a list"):
+            vault.update_body(
+                "Storage Layer",
+                field="related",
+                content="[[Token Efficiency]]",
+            )
+
+    def test_delete_related(self, vault: BrainVault, vault_dir: Path):
+        result = vault.update_body(
+            "Storage Layer",
+            field="related",
+        )
+        assert result["action"] == "deleted"
+
+        text = (vault_dir / "system" / "Storage Layer.md").read_text(encoding="utf-8")
+        assert "## Related" not in text
+        assert "## Intent" in text  # Other sections preserved
+
+    # -- canonical ordering --------------------------------------------
+
+    def test_new_field_inserted_at_canonical_position(self, vault: BrainVault, vault_dir: Path):
+        # Storage Layer has: preamble, intent, related
+        # Add architecture — should appear after intent, before related
+        result = vault.update_body(
+            "Storage Layer",
+            field="architecture",
+            content="- Single-class design with BrainVault as the main interface",
+        )
+        assert result["action"] == "created"
+
+        text = (vault_dir / "system" / "Storage Layer.md").read_text(encoding="utf-8")
+        intent_pos = text.index("## Intent")
+        arch_pos = text.index("## Architecture")
+        related_pos = text.index("## Related")
+        assert intent_pos < arch_pos < related_pos
 
 
 # ---------------------------------------------------------------------------
@@ -995,3 +1173,89 @@ class TestArchiveEntity:
         results = vault.search("Token")
         for r in results:
             assert "archived" not in r
+
+
+# ---------------------------------------------------------------------------
+# Unit tests: batched push timer
+# ---------------------------------------------------------------------------
+
+
+class TestBatchedPush:
+    """Tests for the commit-immediately / push-on-timer git strategy."""
+
+    def test_no_push_thread_without_repo_url(self, vault: BrainVault):
+        """When vault_path is used without repo_url, no push thread starts."""
+        assert vault._push_thread is None
+        assert vault._has_unpushed is False
+
+    def test_commit_sets_unpushed_flag(self, tmp_path: Path):
+        """_commit_and_push_batch sets _has_unpushed after a successful commit."""
+        import subprocess
+        # Set up a real git repo so commits work
+        subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, capture_output=True)
+
+        # Create vault structure
+        (tmp_path / "brief.yml").write_text("active-project: Test\n")
+        for folder in ["concept", "decision", "goal", "system", "drift", "pattern", "lesson", "rule"]:
+            (tmp_path / folder).mkdir(exist_ok=True)
+        (tmp_path / "types.yml").write_text("{}")
+        (tmp_path / "tags.yml").write_text("{}")
+        (tmp_path / "extraction-schema.yml").write_text("{}")
+
+        # Initial commit so repo has a HEAD
+        subprocess.run(["git", "add", "-A"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=tmp_path, capture_output=True)
+
+        vault = BrainVault(vault_path=tmp_path, repo_url="https://fake.example/repo.git")
+        # Push thread started but timer is long — won't fire during test
+        assert vault._push_thread is not None
+
+        # Create a file and commit it
+        test_file = tmp_path / "concept" / "Test.md"
+        test_file.write_text("---\ntitle: Test\n---\n# Test\n")
+
+        vault._commit_and_push_batch([test_file], "test commit")
+
+        # Wait for background thread to finish
+        import time
+        time.sleep(2)
+
+        assert vault._has_unpushed is True
+        # Clean up
+        vault._push_stop.set()
+
+    def test_try_push_skips_when_nothing_unpushed(self, vault: BrainVault):
+        """_try_push does nothing when _has_unpushed is False."""
+        vault._has_unpushed = False
+        vault._try_push()  # Should not raise
+
+    def test_shutdown_push_sets_stop_event(self, vault: BrainVault):
+        """_shutdown_push signals the timer loop to stop."""
+        vault._shutdown_push()
+        assert vault._push_stop.is_set()
+
+    def test_push_timer_respects_stop_event(self, tmp_path: Path):
+        """Push timer loop exits when stop event is set."""
+        (tmp_path / "brief.yml").write_text("active-project: Test\n")
+        for folder in ["concept", "decision", "goal", "system", "drift", "pattern", "lesson", "rule"]:
+            (tmp_path / folder).mkdir(exist_ok=True)
+        (tmp_path / "types.yml").write_text("{}")
+        (tmp_path / "tags.yml").write_text("{}")
+        (tmp_path / "extraction-schema.yml").write_text("{}")
+
+        vault = BrainVault(vault_path=tmp_path, repo_url="https://fake.example/repo.git", push_interval=0.1)
+        assert vault._push_thread is not None
+        assert vault._push_thread.is_alive()
+
+        # Stop the timer
+        vault._push_stop.set()
+        vault._push_thread.join(timeout=2)
+        assert not vault._push_thread.is_alive()
+
+    def test_git_lock_prevents_concurrent_operations(self, vault: BrainVault):
+        """The git lock exists and is a threading.Lock."""
+        import threading
+        assert hasattr(vault, '_git_lock')
+        assert isinstance(vault._git_lock, type(threading.Lock()))
