@@ -310,7 +310,8 @@ def synthesize(candidates: list[dict]) -> str:
         candidates: List of candidates that have been through match_concepts.
             Required fields: title, disposition, tags, claims.
             For merge: must include matched_entity.path from match_concepts output.
-            Optional: relationships (list of wiki-link targets), type (entity type).
+            Optional: relationships (list of wiki-link targets), type (entity type),
+                project (project name — defaults to active-project from brief.yml).
 
     Validates tags against controlled vocabulary. Commits and pushes changes.
     Returns per-candidate results with action taken and any warnings.

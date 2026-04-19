@@ -813,6 +813,7 @@ class BrainVault:
                     tags=valid_tags,
                     claims=claims,
                     relationships=relationships,
+                    project=candidate.get("project"),
                 )
             elif disposition == "merge":
                 matched = candidate.get("matched_entity", {})
@@ -872,6 +873,7 @@ class BrainVault:
         tags: list[str],
         claims: list[str],
         relationships: list[str],
+        project: str | None = None,
     ) -> dict[str, Any]:
         """Create a brand-new entity file from a concept candidate."""
         # Determine folder
@@ -888,7 +890,7 @@ class BrainVault:
             }
 
         # Build frontmatter
-        active = self._active_project()
+        proj = project or self._active_project()
         fm: dict[str, Any] = {
             "title": title,
             "guid": str(uuid.uuid4()),
@@ -896,8 +898,8 @@ class BrainVault:
             "status": entity_type if entity_type in ("concept", "drift") else "draft",
             "tags": tags,
         }
-        if active:
-            fm["project"] = [active]
+        if proj:
+            fm["project"] = [proj]
 
         # Build body from claims
         body_lines = [f"# {title}", ""]
