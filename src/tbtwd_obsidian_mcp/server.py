@@ -55,10 +55,12 @@ WHEN TO READ:
 PRE-ACTION VALIDATION:
 - validate_action: CALL THIS before implementing significant changes. Pass your intended \
 action and rationale. The tool checks for conflicting decisions, relevant lessons, \
-and existing patterns. Returns 'proceed', 'review', or 'conflict'.
+applicable rules, and existing patterns. Returns 'proceed', 'review', or 'conflict'.
 - If status is 'conflict': STOP and review the conflicting entities before proceeding.
-- If status is 'review': read the supporting entities for additional context.
+- If status is 'review': read the supporting entities and applicable rules for additional context.
 - If status is 'proceed': safe to continue, but consider persisting your rationale.
+- The 'applicable_rules' field lists enforceable constraints. Rules are NOT suggestions — \
+they are hard requirements that MUST be satisfied. Violations are errors.
 
 DECISION AUDIT TRAIL:
 - ALWAYS cite vault entities when they inform your decisions: "Per [[Entity Title]], using approach X."
@@ -67,6 +69,8 @@ DECISION AUDIT TRAIL:
 
 WRITING:
 - update_memory: update an entity's YAML frontmatter. Auto-validates links, commits, and pushes to GitHub.
+- update_body: update or create a named section in an entity's markdown body. Replaces existing \
+sections or inserts new ones. Auto-validates links, commits, and pushes.
 
 WHEN TO WRITE:
 - Status changes: when work moves forward, update status.
@@ -98,8 +102,10 @@ RULES:
 - Don't let knowledge evaporate — if something was learned, persist it.
 
 ENTITY STRUCTURE: Entities live in type folders (concept/, decision/, drift/, feature/, \
-goal/, system/). Each is a markdown file with YAML frontmatter (guid, id, title, status, \
-type, project, tags, serves, depends-on) and a markdown body with [[wiki-links]].\
+goal/, lesson/, pattern/, procedure/, rule/, system/). Each is a markdown file with YAML \
+frontmatter (guid, id, title, status, type, project, tags, serves, depends-on) and a \
+markdown body with [[wiki-links]]. Rule entities are enforceable constraints — violations \
+are errors, not missed optimizations.\
 """,
 )
 
@@ -218,6 +224,26 @@ def update_memory(entity_id: str, fields: dict) -> str:
     """
     vault = _get_vault()
     result = vault.update_memory(entity_id, fields)
+    return json.dumps(result, indent=2, default=str)
+
+
+@mcp.tool()
+def update_body(entity_id: str, section: str, content: str) -> str:
+    """Update or create a named section in an entity's markdown body.
+
+    If the section (## heading) already exists, replaces its content.
+    If it doesn't exist, inserts it before ## Related (or appends at end).
+
+    Args:
+        entity_id: Entity identifier — a filename slug, path, frontmatter ID, or GUID.
+        section: Section heading name without the ## prefix (e.g. "Applicable Rules").
+        content: Markdown content for the section body. Do not include the heading —
+            it is managed automatically.
+
+    Returns confirmation with action taken (created or replaced) and any link warnings.
+    """
+    vault = _get_vault()
+    result = vault.update_body(entity_id, section, content)
     return json.dumps(result, indent=2, default=str)
 
 
@@ -372,16 +398,20 @@ def get_relevant_context(
 
 @mcp.tool()
 def validate_action(action: str, rationale: str) -> str:
-    """Pre-action validation: check the vault for conflicts before acting.
+    """Pre-action validation: check the vault for conflicts and rules before acting.
 
     Call this before implementing significant changes. Searches the vault
-    for decisions, patterns, lessons, and drift entries that may conflict
-    with or inform your proposed action.
+    for decisions, patterns, lessons, rules, and drift entries that may
+    conflict with or inform your proposed action. Also loads all active
+    rules and surfaces those relevant to the action.
 
     Returns one of three statuses:
-    - 'proceed': no conflicts found (consider persisting the rationale)
-    - 'review': found supporting or informational entities worth reading
+    - 'proceed': no conflicts or relevant rules found
+    - 'review': found applicable rules, supporting, or informational entities
     - 'conflict': found decisions or lessons that may contradict your plan
+
+    The 'applicable_rules' field contains enforceable constraints that MUST
+    be satisfied. Rules are not suggestions — they are hard requirements.
 
     Args:
         action: What you intend to do (e.g. "Add caching layer to query tool").

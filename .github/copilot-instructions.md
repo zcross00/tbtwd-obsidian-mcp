@@ -89,4 +89,15 @@ When modifying the MCP server code (`src/tbtwd_obsidian_mcp/`):
 
 ## Vault Access Rule
 
-Per [[Vault Access Via MCP Only]]: **never interact with vault files directly.** All reads go through MCP tools (`get_context`, `query`, `search`, etc.). All writes go through MCP tools (`update_memory`, `synthesize`). If the MCP server can't do what you need, enhance the server first, then use the new tool. Direct file manipulation bypasses validation, schema enforcement, and git management.
+Per [[Vault Access Via MCP Only]]: **never interact with vault files directly.** All reads go through MCP tools (`get_context`, `query`, `search`, etc.). All writes go through MCP tools (`update_memory`, `update_body`, `synthesize`). If the MCP server can't do what you need, enhance the server first, then use the new tool. Direct file manipulation bypasses validation, schema enforcement, and git management.
+
+## Rule Enforcement (CRITICAL)
+
+Vault `rule` entities are **enforceable constraints**, not suggestions. Violations are errors.
+
+- `validate_action` automatically surfaces applicable rules — check `applicable_rules` in every response
+- Before implementation, load active rules: `query(entity_type="rule", status="active")`
+- When following a procedure, load its `## Applicable Rules` section via `get_context`
+- **If a rule blocks your approach**, follow its prescribed alternative or escalation path — do NOT silently bypass it
+- **Never acknowledge a rule and then ignore it** — that is worse than not knowing about the rule
+- If no compliant path exists, flag it to the user and ask how to proceed

@@ -489,6 +489,80 @@ class BrainVault:
             **git_info,
         }
 
+    # -- body editing ------------------------------------------------------
+
+    _SECTION_RE = re.compile(r"^## ", re.MULTILINE)
+
+    def update_body(
+        self,
+        entity_id: str,
+        section: str,
+        content: str,
+    ) -> dict[str, Any]:
+        """Update or create a named section in an entity's markdown body.
+
+        If the section (## heading) exists, replaces its content.
+        If it doesn't exist, inserts before ## Related (or appends at end).
+
+        Args:
+            entity_id: Entity identifier (slug, path, frontmatter ID, or GUID).
+            section: Section heading name (without ## prefix).
+            content: Markdown content for the section body (no heading).
+
+        Returns confirmation with action taken, warnings, and git info.
+        """
+        path = self._resolve_entity_path(entity_id)
+        if path is None:
+            raise FileNotFoundError(f"Entity {entity_id} not found in vault")
+
+        text = path.read_text(encoding="utf-8")
+        fm, body = _parse_frontmatter(text)
+
+        # Build the new section text
+        section_text = f"## {section}\n\n{content.rstrip()}\n"
+
+        # Find existing section boundaries
+        pattern = re.compile(
+            rf"^## {re.escape(section)}\s*\n(.*?)(?=^## |\Z)",
+            re.MULTILINE | re.DOTALL,
+        )
+        match = pattern.search(body)
+
+        if match:
+            # Replace the existing section (heading + content)
+            body = body[: match.start()] + section_text + "\n" + body[match.end():]
+            action = "replaced"
+        else:
+            # Insert before ## Related if it exists, otherwise append
+            related_match = re.search(r"^## Related\s*\n", body, re.MULTILINE)
+            if related_match:
+                body = (
+                    body[: related_match.start()]
+                    + section_text
+                    + "\n"
+                    + body[related_match.start() :]
+                )
+            else:
+                body = body.rstrip() + "\n\n" + section_text
+            action = "created"
+
+        new_text = _serialize_frontmatter(fm, body)
+        warnings = self._validate_links(new_text)
+
+        path.write_text(new_text, encoding="utf-8")
+
+        git_info = self._commit_and_push(
+            path, f"update body: {entity_id} [{section}]"
+        )
+
+        return {
+            "updated": entity_id,
+            "section": section,
+            "action": action,
+            "warnings": warnings,
+            **git_info,
+        }
+
     # -- link checking -----------------------------------------------------
 
     def _resolve_link(self, target: str) -> bool:
@@ -1172,9 +1246,9 @@ class BrainVault:
     ) -> dict[str, Any]:
         """Pre-action validation: check for vault conflicts before acting.
 
-        Searches the vault for decisions, patterns, lessons, and drift entries
-        that may conflict with or inform the proposed action. Returns either
-        a green light or a list of relevant entities the agent should review.
+        Searches the vault for decisions, patterns, lessons, rules, and drift
+        entries that may conflict with or inform the proposed action. Also
+        loads all active rules and surfaces those relevant to the action.
 
         Args:
             action: Description of what the agent intends to do.
@@ -1182,15 +1256,36 @@ class BrainVault:
 
         Returns:
             - status: 'proceed' | 'review' | 'conflict'
-            - relevant_entities: entities the agent should consider
             - conflicts: entities that directly contradict the action
+            - applicable_rules: active rules relevant to the action
             - supporting: entities that support the action
+            - informational: entities worth reviewing
             - message: human-readable summary
         """
         combined_query = f"{action} {rationale}"
 
         # Search across all entity types for relevance
         all_results = self.search(combined_query, max_results=10)
+
+        # Also load all active rules — rules are always surfaced when relevant
+        all_rules = self.query(entity_type="rule", status="active")
+        # Score rules against the action for relevance
+        applicable_rules: list[dict[str, Any]] = []
+        action_lower = combined_query.lower()
+        for rule in all_rules:
+            rule_title = rule.get("title", "").lower()
+            rule_tags = {t.lower() for t in rule.get("tags", [])}
+            # Check if rule title words appear in the action/rationale
+            rule_words = set(re.findall(r"[a-z]{4,}", rule_title))
+            if rule_words:
+                overlap = sum(1 for w in rule_words if w in action_lower)
+                if overlap / len(rule_words) >= 0.3:
+                    applicable_rules.append(rule)
+                    continue
+            # Check tag overlap with action keywords
+            action_words = set(re.findall(r"[a-z]{4,}", action_lower))
+            if rule_tags & action_words:
+                applicable_rules.append(rule)
 
         # Categorize by type
         conflicts: list[dict[str, Any]] = []
@@ -1208,6 +1303,10 @@ class BrainVault:
             elif entity_type == "lesson" and score >= 2.0:
                 # Lessons from past experience are warnings
                 conflicts.append(result)
+            elif entity_type == "rule" and score >= 1.5:
+                # Rules are enforceable constraints — always surface
+                if result not in applicable_rules:
+                    applicable_rules.append(result)
             elif entity_type in ("pattern", "procedure"):
                 # Existing patterns/procedures may already solve this
                 supporting.append(result)
@@ -1224,13 +1323,26 @@ class BrainVault:
                 f"Found {len(conflicts)} potentially conflicting "
                 f"decision(s)/lesson(s). Review before proceeding."
             )
-        elif supporting or informational:
-            status = "review"
-            message = (
-                f"Found {len(supporting)} supporting and "
-                f"{len(informational)} informational entities. "
-                f"Consider reviewing for additional context."
-            )
+        elif applicable_rules or supporting or informational:
+            if applicable_rules and not supporting and not informational:
+                status = "review"
+                message = (
+                    f"Found {len(applicable_rules)} applicable rule(s). "
+                    f"Rules are enforceable constraints — verify compliance."
+                )
+            else:
+                status = "review"
+                parts = []
+                if applicable_rules:
+                    parts.append(f"{len(applicable_rules)} applicable rule(s)")
+                if supporting:
+                    parts.append(f"{len(supporting)} supporting")
+                if informational:
+                    parts.append(f"{len(informational)} informational")
+                message = (
+                    f"Found {', '.join(parts)} entities. "
+                    f"Consider reviewing for additional context."
+                )
         else:
             status = "proceed"
             message = (
@@ -1244,6 +1356,7 @@ class BrainVault:
             "action": action,
             "rationale": rationale,
             "conflicts": conflicts,
+            "applicable_rules": applicable_rules,
             "supporting": supporting,
             "informational": informational,
         }

@@ -154,7 +154,29 @@ You must **actively seek opportunities to capture knowledge** throughout every t
 Before implementing any significant change:
 1. Call `validate_action` with the proposed action and rationale
 2. Review any conflicts or relevant context returned
-3. If conflicts exist, discuss with the user before proceeding
+3. **Check `applicable_rules`** — rules are hard requirements, not suggestions. If the action would violate a rule, STOP and follow the rule's prescribed alternative
+4. If conflicts exist, discuss with the user before proceeding
+
+## Rule Enforcement (CRITICAL)
+
+Rules (`type: rule`) are **enforceable constraints**. Unlike patterns (good ideas) or decisions (choices made), rules are hard requirements where violations are errors.
+
+**Loading rules:**
+- `validate_action` automatically surfaces applicable rules in its response
+- Before implementation work, also load project rules: `query(entity_type="rule", project="...")`
+- Each procedure lists its applicable rules in an `## Applicable Rules` section — load them via `get_context` when following that procedure
+
+**Compliance is mandatory:**
+- If a rule says "never do X", you must not do X — even if it seems faster, easier, or harmless
+- If a rule constrains an approach, follow the constraint — do not rationalize bypassing it
+- If a rule provides an escalation path (e.g., "if the server can't do what you need, enhance it first"), follow the escalation path
+- **Never acknowledge a rule and then bypass it** — that is worse than not knowing about the rule
+
+**When a rule blocks your approach:**
+- State which rule is blocking and why
+- Follow the rule's prescribed alternative or escalation path
+- If no alternative exists, flag it to the user and ask how to proceed
+- Do NOT silently work around the rule
 
 ## Constraints
 
@@ -166,6 +188,9 @@ Before implementing any significant change:
 - DO NOT ignore user input because the vault disagrees — the user is the ultimate authority on intent and current reality
 - DO NOT ignore vault knowledge because the user said something different — surface the inconsistency and let the user decide
 - DO NOT follow procedures rigidly when the situation clearly doesn't warrant it — use judgment
+- DO NOT violate vault rules — rules are hard requirements, not suggestions. If a rule blocks your approach, follow its escalation path or ask the user. Never acknowledge a rule and then bypass it.
+- DO NOT interact with vault files directly — per [[Vault Access Via MCP Only]], all reads/writes go through MCP tools. If the server can't do what you need, enhance the server first.
+- DO check `applicable_rules` in every `validate_action` response and comply with them
 - DO synthesize new knowledge only after matching against existing entities first
 - DO persist knowledge continuously, not just at session end
 - DO follow [[Vault Access Via MCP Only]] — never read or write vault files directly, always use MCP tools. If the server can't do what you need, enhance it first.

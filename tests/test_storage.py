@@ -93,6 +93,12 @@ def vault_dir(tmp_path: Path) -> Path:
             "folder": "lesson",
             "required-fields": ["title", "project", "tags", "status"],
         },
+        "rule": {
+            "description": "Enforceable constraints and standards.",
+            "statuses": ["draft", "active", "superseded"],
+            "folder": "rule",
+            "required-fields": ["title", "project", "tags", "status"],
+        },
     }
     (tmp_path / "types.yml").write_text(
         yaml.dump(types, default_flow_style=False), encoding="utf-8"
@@ -131,7 +137,7 @@ def vault_dir(tmp_path: Path) -> Path:
     )
 
     # Create type folders
-    for folder in ["concept", "decision", "goal", "system", "drift", "pattern", "lesson"]:
+    for folder in ["concept", "decision", "goal", "system", "drift", "pattern", "lesson", "rule"]:
         (tmp_path / folder).mkdir()
 
     # Create sample entities
@@ -251,6 +257,29 @@ def vault_dir(tmp_path: Path) -> Path:
         - Git subprocesses called from stdio MCP server can deadlock on pipe buffers
         - Moving git push to a daemon thread resolved the issue
         - Always use daemon=True so the thread doesn't block server shutdown
+    """))
+
+    _write_entity(tmp_path / "rule" / "Vault Access Via MCP Only.md", {
+        "title": "Vault Access Via MCP Only",
+        "guid": "b8b8b8b8-c9c9-d0d0-e1e1-f2f2f2f2f2f2",
+        "type": ["rule"],
+        "status": "active",
+        "tags": ["core", "architecture"],
+        "project": ["TestProject"],
+    }, textwrap.dedent("""\
+        # Vault Access Via MCP Only
+
+        All vault interaction goes through MCP server tools, never direct file access.
+
+        ## Constraint
+
+        - Read vault entities via MCP tools only
+        - Write vault entities via MCP tools only
+        - Never use direct file manipulation on vault files
+
+        ## Related
+
+        - [[Storage Layer]]
     """))
 
     return tmp_path
@@ -747,8 +776,18 @@ class TestValidateAction:
         assert "status" in result
         assert "message" in result
         assert "conflicts" in result
+        assert "applicable_rules" in result
         assert "supporting" in result
         assert "informational" in result
+
+    def test_surfaces_applicable_rules(self, vault: BrainVault):
+        result = vault.validate_action(
+            action="Edit vault entity files directly using read_file and replace_string",
+            rationale="Need to update entity body content",
+        )
+        assert "applicable_rules" in result
+        rule_titles = [r.get("title", r.get("id", "")) for r in result["applicable_rules"]]
+        assert any("Vault Access" in t for t in rule_titles)
 
 
 # ---------------------------------------------------------------------------
@@ -782,3 +821,86 @@ class TestUpdateMemory:
             "serves": ["[[Nonexistent Target]]"],
         })
         assert any("not found" in w for w in result["warnings"])
+
+
+# ---------------------------------------------------------------------------
+# Integration tests: update_body
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateBody:
+    def test_create_new_section(self, vault: BrainVault, vault_dir: Path):
+        result = vault.update_body(
+            "Token Efficiency",
+            section="Applicable Rules",
+            content="- [[Vault Access Via MCP Only]]",
+        )
+        assert result["updated"] == "Token Efficiency"
+        assert result["section"] == "Applicable Rules"
+        assert result["action"] == "created"
+
+        # Verify section was inserted before ## Related
+        text = (vault_dir / "concept" / "Token Efficiency.md").read_text(encoding="utf-8")
+        rules_pos = text.index("## Applicable Rules")
+        related_pos = text.index("## Related")
+        assert rules_pos < related_pos
+
+    def test_replace_existing_section(self, vault: BrainVault, vault_dir: Path):
+        # First create the section
+        vault.update_body(
+            "Token Efficiency",
+            section="Applicable Rules",
+            content="- [[Vault Access Via MCP Only]]",
+        )
+        # Then replace it
+        result = vault.update_body(
+            "Token Efficiency",
+            section="Applicable Rules",
+            content="- [[Vault Access Via MCP Only]]\n- [[Storage Layer]]",
+        )
+        assert result["action"] == "replaced"
+
+        text = (vault_dir / "concept" / "Token Efficiency.md").read_text(encoding="utf-8")
+        assert "[[Storage Layer]]" in text
+        # Only one ## Applicable Rules heading should exist
+        assert text.count("## Applicable Rules") == 1
+
+    def test_create_section_no_related(self, vault: BrainVault, vault_dir: Path):
+        # Test Goal One has no ## Related section
+        result = vault.update_body(
+            "Test Goal One",
+            section="Notes",
+            content="Some additional notes here.",
+        )
+        assert result["action"] == "created"
+
+        text = (vault_dir / "goal" / "Test Goal One.md").read_text(encoding="utf-8")
+        assert "## Notes" in text
+        assert "Some additional notes here." in text
+
+    def test_nonexistent_entity(self, vault: BrainVault):
+        with pytest.raises(FileNotFoundError):
+            vault.update_body("Nonexistent", section="Test", content="test")
+
+    def test_validates_links(self, vault: BrainVault):
+        result = vault.update_body(
+            "Token Efficiency",
+            section="Applicable Rules",
+            content="- [[Nonexistent Rule Entity]]",
+        )
+        assert any("not found" in w for w in result["warnings"])
+
+    def test_preserves_other_sections(self, vault: BrainVault, vault_dir: Path):
+        result = vault.update_body(
+            "Storage Layer",
+            section="Applicable Rules",
+            content="- [[Vault Access Via MCP Only]]",
+        )
+        assert result["action"] == "created"
+
+        text = (vault_dir / "system" / "Storage Layer.md").read_text(encoding="utf-8")
+        # Original sections should still be present
+        assert "## Intent" in text
+        assert "## Related" in text
+        assert "## Applicable Rules" in text
+        assert "File I/O and YAML parsing" in text
