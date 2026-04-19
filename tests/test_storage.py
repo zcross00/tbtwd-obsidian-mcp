@@ -38,8 +38,8 @@ def vault_dir(tmp_path: Path) -> Path:
                 "summary": "A test project for unit tests.",
                 "stack": ["Python"],
                 "goals": {
-                    "G-1": "Test goal one",
-                    "G-2": "Test goal two",
+                    "Test goal one": "A test goal for unit testing",
+                    "Test goal two": "Another test goal",
                 },
             },
         },
@@ -137,8 +137,7 @@ def vault_dir(tmp_path: Path) -> Path:
     # Create sample entities
     _write_entity(tmp_path / "concept" / "Token Efficiency.md", {
         "title": "Token Efficiency",
-        "guid": "aaa-111",
-        "id": "Token Efficiency",
+        "guid": "a1a1a1a1-b2b2-c3c3-d4d4-e5e5e5e5e5e5",
         "type": ["concept"],
         "status": "active",
         "tags": ["architecture", "performance", "core"],
@@ -157,8 +156,7 @@ def vault_dir(tmp_path: Path) -> Path:
 
     _write_entity(tmp_path / "concept" / "Architecture Overview.md", {
         "title": "Architecture Overview",
-        "guid": "bbb-222",
-        "id": "Architecture Overview",
+        "guid": "b2b2b2b2-c3c3-d4d4-e5e5-f6f6f6f6f6f6",
         "type": ["concept"],
         "status": "active",
         "tags": ["core"],
@@ -177,14 +175,13 @@ def vault_dir(tmp_path: Path) -> Path:
 
     _write_entity(tmp_path / "decision" / "YAML For Data.md", {
         "title": "YAML for data, markdown for prose",
-        "guid": "ccc-333",
-        "id": "D-1",
+        "guid": "c3c3c3c3-d4d4-e5e5-f6f6-a7a7a7a7a7a7",
         "type": ["decision"],
         "status": "active",
         "tags": ["architecture", "storage"],
         "project": ["TestProject"],
     }, textwrap.dedent("""\
-        # D-1: YAML for data, markdown for prose
+        # YAML for data, markdown for prose
 
         ## Decision
 
@@ -197,22 +194,20 @@ def vault_dir(tmp_path: Path) -> Path:
 
     _write_entity(tmp_path / "goal" / "Test Goal One.md", {
         "title": "Test goal one",
-        "guid": "ddd-444",
-        "id": "G-1",
+        "guid": "d4d4d4d4-e5e5-f6f6-a7a7-b8b8b8b8b8b8",
         "type": ["goal"],
         "status": "active",
         "tags": ["core"],
         "project": ["TestProject"],
     }, textwrap.dedent("""\
-        # G-1: Test goal one
+        # Test goal one
 
         - A test goal for unit testing
     """))
 
     _write_entity(tmp_path / "system" / "Storage Layer.md", {
         "title": "Storage Layer",
-        "guid": "eee-555",
-        "id": "S-1",
+        "guid": "e5e5e5e5-f6f6-a7a7-b8b8-c9c9c9c9c9c9",
         "type": ["system"],
         "status": "active",
         "tags": ["architecture", "storage"],
@@ -232,8 +227,7 @@ def vault_dir(tmp_path: Path) -> Path:
 
     _write_entity(tmp_path / "drift" / "Open Question.md", {
         "title": "Open Test Question",
-        "guid": "fff-666",
-        "id": "DR-1",
+        "guid": "f6f6f6f6-a7a7-b8b8-c9c9-d0d0d0d0d0d0",
         "type": ["drift"],
         "status": "open",
         "tags": ["architecture"],
@@ -246,7 +240,7 @@ def vault_dir(tmp_path: Path) -> Path:
 
     _write_entity(tmp_path / "lesson" / "Git Pipe Deadlock.md", {
         "title": "Git Pipe Deadlock on Windows",
-        "guid": "ggg-777",
+        "guid": "a7a7a7a7-b8b8-c9c9-d0d0-e1e1e1e1e1e1",
         "type": ["lesson"],
         "status": "documented",
         "tags": ["performance"],
@@ -358,7 +352,7 @@ class TestVaultReading:
     def test_read_brief(self, vault: BrainVault):
         brief = vault.read_brief()
         assert brief["active-project"] == "TestProject"
-        assert "G-1" in brief["projects"]["TestProject"]["goals"]
+        assert "Test goal one" in brief["projects"]["TestProject"]["goals"]
         assert "next_steps" in brief  # enriched with hints
 
     def test_read_types(self, vault: BrainVault):
@@ -371,15 +365,16 @@ class TestVaultReading:
     def test_read_entity_by_title(self, vault: BrainVault):
         entity = vault.read_entity("Token Efficiency")
         assert entity["frontmatter"]["title"] == "Token Efficiency"
-        assert entity["guid"] == "aaa-111"
+        assert entity["guid"] == "a1a1a1a1-b2b2-c3c3-d4d4-e5e5e5e5e5e5"
         assert "Architecture Overview" in entity["links"]
 
     def test_read_entity_by_frontmatter_id(self, vault: BrainVault):
-        entity = vault.read_entity("D-1")
+        """With self-managed IDs removed, resolution falls back to guid or title."""
+        entity = vault.read_entity("YAML For Data")
         assert entity["frontmatter"]["title"] == "YAML for data, markdown for prose"
 
     def test_read_entity_by_guid(self, vault: BrainVault):
-        entity = vault.read_entity("eee-555")
+        entity = vault.read_entity("e5e5e5e5-f6f6-a7a7-b8b8-c9c9c9c9c9c9")
         assert entity["frontmatter"]["title"] == "Storage Layer"
 
     def test_read_entity_not_found(self, vault: BrainVault):
@@ -393,7 +388,8 @@ class TestVaultReading:
         assert "Architecture Overview" in linked_titles
 
     def test_get_context_by_id(self, vault: BrainVault):
-        ctx = vault.get_context("S-1")
+        """Resolution by guid works for get_context."""
+        ctx = vault.get_context("e5e5e5e5-f6f6-a7a7-b8b8-c9c9c9c9c9c9")
         assert ctx["frontmatter"]["title"] == "Storage Layer"
 
     def test_read_tags(self, vault: BrainVault):
@@ -762,19 +758,19 @@ class TestValidateAction:
 
 class TestUpdateMemory:
     def test_update_status(self, vault: BrainVault, vault_dir: Path):
-        result = vault.update_memory("DR-1", {"status": "resolved"})
-        assert result["updated"] == "DR-1"
+        result = vault.update_memory("Open Question", {"status": "resolved"})
+        assert result["updated"] == "Open Question"
         assert "status" in result["fields"]
 
         # Verify the file was updated
-        entity = vault.read_entity("DR-1")
+        entity = vault.read_entity("Open Question")
         assert entity["frontmatter"]["status"] == "resolved"
 
     def test_update_tags(self, vault: BrainVault):
-        result = vault.update_memory("G-1", {"tags": ["core", "performance"]})
-        assert result["updated"] == "G-1"
+        result = vault.update_memory("Test Goal One", {"tags": ["core", "performance"]})
+        assert result["updated"] == "Test Goal One"
 
-        entity = vault.read_entity("G-1")
+        entity = vault.read_entity("Test Goal One")
         assert "performance" in entity["frontmatter"]["tags"]
 
     def test_update_nonexistent_entity(self, vault: BrainVault):
@@ -782,7 +778,7 @@ class TestUpdateMemory:
             vault.update_memory("Nonexistent", {"status": "active"})
 
     def test_update_warns_on_broken_link(self, vault: BrainVault):
-        result = vault.update_memory("G-1", {
+        result = vault.update_memory("Test Goal One", {
             "serves": ["[[Nonexistent Target]]"],
         })
         assert any("not found" in w for w in result["warnings"])
