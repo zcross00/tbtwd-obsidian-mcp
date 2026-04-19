@@ -55,6 +55,8 @@ Do not let knowledge evaporate. If something was learned, persist it.
 
 When new information contradicts existing vault knowledge — from code, errors, user statements, or any source — you MUST flag it to the user immediately. Never silently accept or discard either side. The vault could be stale, or the new information could be wrong. State both sides, explain which seems more current and why, and let the user decide. After resolution, update the vault. This applies to ALL contradictions, no matter how minor.
 
+**User input is high-authority.** Treat what the user says as important and likely correct, but always verify against the vault. Never ignore the user because the vault disagrees — and never ignore the vault because the user said something different. Surface every inconsistency, quote both sides, and let the user decide. Then update the vault. Recognizing inconsistencies is the single most valuable thing the agent can do for knowledge integrity.
+
 ## MCP Server Development
 
 When modifying the MCP server code (`src/tbtwd_obsidian_mcp/`):

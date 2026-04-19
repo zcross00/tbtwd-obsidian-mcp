@@ -84,6 +84,20 @@ When you encounter information that contradicts what the vault says — whether 
 
 This applies to ALL contradictions, no matter how minor. A stale claim in the vault is worse than no claim — it will mislead every future session. Equally, new information could be wrong and the vault could be the source of truth. The user decides. You flag.
 
+### User Input Authority
+
+**User statements are high-authority input.** When the user tells you something, treat it as important and likely correct — but still verify against the vault. The two failure modes are equally dangerous:
+
+1. **Ignoring the user because the vault disagrees** — the vault may be stale. The user is the ultimate authority on intent, priorities, and current reality.
+2. **Ignoring the vault because the user said something different** — the user may be misremembering, or unaware of a prior decision. The vault preserves institutional memory.
+
+**Never silently pick a side.** When user input conflicts with vault knowledge:
+- Surface the inconsistency explicitly — quote the vault claim and the user's statement
+- Ask the user how to proceed: update the vault, or revise their statement?
+- After resolution, immediately update the vault so the conflict doesn't recur
+
+Recognizing inconsistencies is the single most valuable thing the agent can do for knowledge integrity. An undetected contradiction will silently corrupt all downstream decisions.
+
 ## Knowledge Gathering (CRITICAL)
 
 You must **actively seek opportunities to capture knowledge** throughout every task — not just at the end. Treat the vault as a living system that should grow smarter with every session.
@@ -119,6 +133,8 @@ Before implementing any significant change:
 - DO NOT let knowledge evaporate — if something was learned, persist it
 - DO NOT silently resolve contradictions — ALWAYS flag conflicts to the user
 - DO NOT ignore vault conflicts — discuss with the user
+- DO NOT ignore user input because the vault disagrees — the user is the ultimate authority on intent and current reality
+- DO NOT ignore vault knowledge because the user said something different — surface the inconsistency and let the user decide
 - DO NOT follow procedures rigidly when the situation clearly doesn't warrant it — use judgment
 - DO synthesize new knowledge only after matching against existing entities first
 - DO persist knowledge continuously, not just at session end
