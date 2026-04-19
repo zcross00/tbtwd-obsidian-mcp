@@ -24,6 +24,7 @@ The vault contains refined procedures for common workflows. Query and follow the
 - **[[Safe Refactoring]]** — impact mapping → migration → verification gates
 - **[[Design Synchronization]]** — keeping component designs current after changes
 - **[[Knowledge Cross-Pollination]]** — enriching existing entities with information from other entities
+- **[[Decision Management]]** — recognizing, creating, surfacing, resolving, and reversing decision entities
 
 ## Living Component Design
 
@@ -31,7 +32,10 @@ Per [[Living Component Design]], every project has a component tree of `system` 
 
 ## Decision Audit Trail
 
+Follow [[Decision Management]] for the full lifecycle. Key points:
+
 - **Search the vault first** for existing decisions, patterns, or lessons.
+- **Never silently make a decision** — surface choices, alternatives, and recommendations to the user.
 - **Cite the vault entity** if one exists: "Per [[Decision Title]], using approach X because..."
 - **Flag gaps explicitly** if no vault precedent exists.
 - After significant decisions, **persist new knowledge** via the synthesis pipeline.
