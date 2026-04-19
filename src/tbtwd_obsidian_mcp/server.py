@@ -71,6 +71,8 @@ WRITING:
 - update_memory: update an entity's YAML frontmatter. Auto-validates links, commits, and pushes to GitHub.
 - update_body: update or create a named section in an entity's markdown body. Replaces existing \
 sections or inserts new ones. Auto-validates links, commits, and pushes.
+- archive_entity: move an entity to .trash/ preserving type folder structure. Archived entities \
+are excluded from all retrieval. Reports incoming links that will break.
 
 WHEN TO WRITE:
 - Status changes: when work moves forward, update status.
@@ -80,6 +82,8 @@ WHEN TO WRITE:
 - Procedures: when a multi-step process is figured out, persist the steps for reuse.
 - Patterns: when a recurring solution is identified, persist the approach.
 - Metadata: when new relationships emerge, update tags, serves, depends-on.
+- Archival: when a decision has been accepted, implemented, and its constraints extracted \
+into rules — archive it. When a drift is resolved. When an entity is fully superseded.
 
 SYNTHESIZING NEW KNOWLEDGE:
 When new concepts, decisions, or patterns emerge from conversation or work:
@@ -244,6 +248,29 @@ def update_body(entity_id: str, section: str, content: str) -> str:
     """
     vault = _get_vault()
     result = vault.update_body(entity_id, section, content)
+    return json.dumps(result, indent=2, default=str)
+
+
+@mcp.tool()
+def archive_entity(entity_id: str) -> str:
+    """Move an entity to .trash/ preserving its type folder structure.
+
+    Use this to archive entities that have been fully implemented, resolved,
+    or are otherwise no longer needed for active retrieval. Archived entities
+    are excluded from search, query, and validate_action.
+
+    The response includes incoming_links — a list of other entities that
+    reference this one via wiki-links. These links will become broken after
+    archiving. Review them and update or remove references as needed.
+
+    Args:
+        entity_id: Entity identifier — a filename slug, path, frontmatter ID, or GUID.
+
+    Returns confirmation with original path, archive path, and any incoming links
+    that will break.
+    """
+    vault = _get_vault()
+    result = vault.archive_entity(entity_id)
     return json.dumps(result, indent=2, default=str)
 
 

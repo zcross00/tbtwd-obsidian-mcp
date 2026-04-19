@@ -563,6 +563,114 @@ class BrainVault:
             **git_info,
         }
 
+    # -- archival ----------------------------------------------------------
+
+    def archive_entity(self, entity_id: str) -> dict[str, Any]:
+        """Move an entity to .trash/ preserving its type folder structure.
+
+        Archived entities are excluded from search, query, and validate_action
+        because _iter_entity_files skips dot-prefixed directories.
+
+        Args:
+            entity_id: Entity identifier (slug, path, frontmatter ID, or GUID).
+
+        Returns confirmation with original path, archive path, incoming links,
+        and git info.
+        """
+        path = self._resolve_entity_path(entity_id)
+        if path is None:
+            raise FileNotFoundError(f"Entity {entity_id} not found in vault")
+
+        # Determine type folder (e.g. "decision") from the entity's parent
+        type_folder = path.parent.name
+
+        # Build the archive destination: .trash/<type>/<filename>
+        trash_dir = self.root / ".trash" / type_folder
+        trash_dir.mkdir(parents=True, exist_ok=True)
+        dest = trash_dir / path.name
+
+        if dest.exists():
+            raise FileExistsError(
+                f"Archive destination already exists: .trash/{type_folder}/{path.name}"
+            )
+
+        # Find incoming links (other entities that reference this one)
+        entity_stem = path.stem
+        incoming: list[str] = []
+        for _, other_path in self._iter_entity_files():
+            if other_path == path:
+                continue
+            text = other_path.read_text(encoding="utf-8")
+            if f"[[{entity_stem}]]" in text or f"[[{entity_stem}|" in text:
+                incoming.append(str(other_path.relative_to(self.root)))
+
+        # Move the file
+        import shutil
+        shutil.move(str(path), str(dest))
+
+        # Git: stage the deletion and the new file
+        rel_old = str(path.relative_to(self.root))
+        rel_new = str(dest.relative_to(self.root))
+        git_info = self._archive_commit_and_push(
+            rel_old, rel_new, f"archive {entity_id} to .trash/{type_folder}/"
+        )
+
+        return {
+            "archived": entity_id,
+            "from": rel_old,
+            "to": rel_new,
+            "incoming_links": incoming,
+            "incoming_link_count": len(incoming),
+            **git_info,
+        }
+
+    def _archive_commit_and_push(
+        self, old_rel: str, new_rel: str, message: str
+    ) -> dict[str, Any]:
+        """Stage a file move (rm old + add new), commit, and push."""
+        info: dict[str, Any] = {"git": "skipped"}
+
+        if not self._repo_url:
+            return info
+
+        def _bg() -> None:
+            try:
+                self._ensure_remote(self._repo_url)
+
+                # Stage the removal and the addition
+                result = self._git("rm", "--cached", old_rel)
+                if result.returncode != 0:
+                    # File may already be untracked; try plain add
+                    log.debug("git rm --cached failed, continuing: %s", result.stderr.strip())
+
+                result = self._git("add", new_rel)
+                if result.returncode != 0:
+                    log.warning("git add failed: %s", result.stderr.strip())
+                    return
+
+                # Also stage the removal from the index
+                result = self._git("add", "-A", old_rel)
+
+                result = self._git("commit", "-m", message)
+                if result.returncode != 0:
+                    combined = (result.stdout + result.stderr).lower()
+                    if "nothing to commit" in combined:
+                        return
+                    log.warning("git commit failed: %s", result.stderr.strip() or result.stdout.strip())
+                    return
+
+                result = self._git("push", "origin", "main")
+                if result.returncode != 0:
+                    log.warning("background push failed: %s", result.stderr.strip())
+                else:
+                    log.info("background push succeeded for archive")
+            except Exception:
+                log.exception("background archive commit+push error")
+
+        threading.Thread(target=_bg, daemon=True).start()
+        info["git"] = "committed_push_pending"
+        return info
+
     # -- link checking -----------------------------------------------------
 
     def _resolve_link(self, target: str) -> bool:

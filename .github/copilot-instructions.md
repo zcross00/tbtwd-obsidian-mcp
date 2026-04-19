@@ -89,7 +89,7 @@ When modifying the MCP server code (`src/tbtwd_obsidian_mcp/`):
 
 ## Vault Access Rule
 
-Per [[Vault Access Via MCP Only]]: **never interact with vault files directly.** All reads go through MCP tools (`get_context`, `query`, `search`, etc.). All writes go through MCP tools (`update_memory`, `update_body`, `synthesize`). If the MCP server can't do what you need, enhance the server first, then use the new tool. Direct file manipulation bypasses validation, schema enforcement, and git management.
+Per [[Vault Access Via MCP Only]]: **never interact with vault files directly.** All reads go through MCP tools (`get_context`, `query`, `search`, etc.). All writes go through MCP tools (`update_memory`, `update_body`, `synthesize`, `archive_entity`). If the MCP server can't do what you need, enhance the server first, then use the new tool. Direct file manipulation bypasses validation, schema enforcement, and git management.
 
 ## Rule Enforcement (CRITICAL)
 

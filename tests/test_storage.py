@@ -904,3 +904,53 @@ class TestUpdateBody:
         assert "## Related" in text
         assert "## Applicable Rules" in text
         assert "File I/O and YAML parsing" in text
+
+
+# ---------------------------------------------------------------------------
+# Unit tests: archive_entity
+# ---------------------------------------------------------------------------
+
+
+class TestArchiveEntity:
+    def test_archive_moves_file(self, vault: BrainVault, vault_dir: Path):
+        result = vault.archive_entity("YAML For Data")
+        assert result["archived"] == "YAML For Data"
+        assert Path(result["from"]) == Path("decision/YAML For Data.md")
+        assert Path(result["to"]) == Path(".trash/decision/YAML For Data.md")
+
+        # Original file should be gone
+        assert not (vault_dir / "decision" / "YAML For Data.md").exists()
+        # Archived file should exist
+        assert (vault_dir / ".trash" / "decision" / "YAML For Data.md").exists()
+
+    def test_archived_entity_excluded_from_search(self, vault: BrainVault):
+        vault.archive_entity("YAML For Data")
+        results = vault.search("YAML")
+        titles = [r["title"] for r in results]
+        assert "YAML for data, markdown for prose" not in titles
+
+    def test_archived_entity_excluded_from_query(self, vault: BrainVault):
+        vault.archive_entity("YAML For Data")
+        results = vault.query(entity_type="decision")
+        ids = [r["id"] for r in results]
+        assert "YAML For Data" not in ids
+
+    def test_reports_incoming_links(self, vault: BrainVault):
+        # Architecture Overview links to Storage Layer
+        result = vault.archive_entity("Storage Layer")
+        assert result["incoming_link_count"] > 0
+        assert any("Architecture Overview" in link for link in result["incoming_links"])
+
+    def test_nonexistent_entity(self, vault: BrainVault):
+        with pytest.raises(FileNotFoundError):
+            vault.archive_entity("Nonexistent Entity")
+
+    def test_archive_creates_trash_structure(self, vault: BrainVault, vault_dir: Path):
+        vault.archive_entity("Open Question")
+        assert (vault_dir / ".trash" / "drift" / "Open Question.md").exists()
+
+    def test_duplicate_archive_raises(self, vault: BrainVault):
+        vault.archive_entity("YAML For Data")
+        # Can't archive again — already in trash
+        with pytest.raises(FileNotFoundError):
+            vault.archive_entity("YAML For Data")
