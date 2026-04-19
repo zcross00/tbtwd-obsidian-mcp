@@ -13,18 +13,34 @@ This workspace develops and uses the **tbtwd-obsidian** server — a persistent 
 3. **Load the component tree** — `query(entity_type="system", project="...")` to understand what exists in the active project.
 4. **Cite vault sources** — reference entity titles (e.g., "per [[Work Implementation]]") when your actions are informed by vault knowledge.
 
+## Context Recovery (After Compaction)
+
+When context is compacted or summarized — conversation truncation, context window limits, session handoff:
+
+1. Call `get_brief` immediately to re-establish orientation
+2. Re-query vault entities that were actively informing your work via `get_relevant_context(topic)`
+3. Re-read any files being edited — do not rely on compacted summaries
+4. Re-load the component tree if implementation work is in progress
+
+**Always prefer a fresh vault pull over a stale summary.**
+
 ## Procedures
 
-The vault contains refined procedures for common workflows. Query and follow these:
-- **[[Work Implementation]]** — full lifecycle from task understanding to delivery
-- **[[Work Verification]]** — compile gate → test gate → criteria verification → report
-- **[[Work Planning]]** — goals → component tree → gap analysis → work items
-- **[[Strategic Review]]** — drift detection, process improvements, phase assessment
-- **[[Error Diagnosis]]** — structured triage for compile, test, runtime, and tooling errors
-- **[[Safe Refactoring]]** — impact mapping → migration → verification gates
-- **[[Design Synchronization]]** — keeping component designs current after changes
-- **[[Knowledge Cross-Pollination]]** — enriching existing entities with information from other entities
-- **[[Decision Management]]** — recognizing, creating, surfacing, resolving, and reversing decision entities
+The vault contains refined procedures for common workflows. **Before acting on any task, match it against the procedure list.** If no procedure matches but the task is multi-step, reusable, and repeatable, suggest creating a new procedure.
+
+- **[[Work Implementation]]** — *triggers: implement, build, code, branch, commit, merge* — full lifecycle from task understanding to delivery
+- **[[Work Verification]]** — *triggers: verify, validate, test, check quality* — compile gate → test gate → criteria verification → report
+- **[[Work Planning]]** — *triggers: plan, scope, break down, prioritize, gap analysis* — goals → component tree → gap analysis → work items
+- **[[Strategic Review]]** — *triggers: review, audit, health check, drift, retrospective* — drift detection, process improvements, phase assessment
+- **[[Error Diagnosis]]** — *triggers: error, bug, fail, broken, crash, diagnose* — structured triage for compile, test, runtime, and tooling errors
+- **[[Safe Refactoring]]** — *triggers: refactor, rename, restructure, move, migrate* — impact mapping → migration → verification gates
+- **[[Design Synchronization]]** — *triggers: update design, sync design, architecture changed* — keeping component designs current after changes
+- **[[Knowledge Cross-Pollination]]** — *triggers: enrich, cross-reference, connect, link entities* — enriching existing entities with information from other entities
+- **[[Decision Management]]** — *triggers: decide, choose, trade-off, alternative, which approach* — recognizing, creating, surfacing, resolving, and reversing decision entities
+
+### Procedure Recognition
+
+When the user directs you through a multi-step task that is reusable, repeatable, and non-trivial (3+ steps with meaningful decision points), and no existing procedure covers it — flag this to the user and suggest creating a procedure entity for it.
 
 ## Living Component Design
 

@@ -39,23 +39,47 @@ If something was learned — a new pattern, a debugging insight, a process impro
 4. `match_concepts` to check for duplicates
 5. `synthesize` to persist
 
+## Context Recovery (After Compaction)
+
+When context is compacted or summarized — conversation truncation, context window limits, session handoff, or any loss of prior conversation detail:
+
+1. **Call `get_brief` immediately** to re-establish orientation (active project, goals, focus)
+2. **Re-query vault entities** that were actively informing your work — use `get_relevant_context(topic)` for the current task area
+3. **Re-read any files** that were being edited or analyzed — do not rely on compacted summaries of file contents
+4. **Re-load the component tree** if implementation work is in progress — `query(entity_type="system", project="...")`
+
+Context compaction loses nuance. The vault retains it. **Always prefer a fresh vault pull over a stale summary.** Never continue working from compacted context alone when vault knowledge is available.
+
 ## Procedures
 
-The vault contains refined procedures for common workflows. Query and follow these when applicable:
+The vault contains refined procedures for common workflows. **Before acting on any task, scan through this table and select the matching procedure.** If the task spans multiple procedures, follow each in the relevant phase. If no procedure matches, use your judgment — but consider whether a new procedure should be created (see Procedure Recognition below).
 
-| Procedure | When to use |
-|-----------|-------------|
-| [[Work Implementation]] | Taking a task from understood to delivered — branching, implementing, testing, committing, merging |
-| [[Work Verification]] | Verifying completed work — compile gate, test gate, criteria check, standards, verification report |
-| [[Work Planning]] | Assessing goals, reading the component tree, identifying gaps, creating work items with clear criteria |
-| [[Strategic Review]] | Reviewing project health, detecting drift, identifying process improvements, assessing phase readiness |
-| [[Error Diagnosis]] | Systematically diagnosing compile errors, test failures, runtime errors, and tooling issues |
-| [[Safe Refactoring]] | Modifying existing code without breaking dependents — impact mapping, migration paths, verification gates |
-| [[Design Synchronization]] | Keeping component designs current after implementation work |
-| [[Knowledge Cross-Pollination]] | Enriching existing entities with information from other entities — weaving in answers, context, and enhancements |
-| [[Decision Management]] | Recognizing decision points, creating decision entities, surfacing past decisions during work, resolving and reversing decisions |
+| Procedure | Triggers | When to use |
+|-----------|----------|-------------|
+| [[Work Implementation]] | implement, build, develop, code, branch, commit, merge, deliver | Taking a task from understood to delivered — branching, implementing, testing, committing, merging |
+| [[Work Verification]] | verify, validate, check, test, confirm, review quality | Verifying completed work — compile gate, test gate, criteria check, standards, verification report |
+| [[Work Planning]] | plan, scope, break down, assess, prioritize, backlog, gap analysis | Assessing goals, reading the component tree, identifying gaps, creating work items with clear criteria |
+| [[Strategic Review]] | review, health check, audit, drift, phase assessment, retrospective | Reviewing project health, detecting drift, identifying process improvements, assessing phase readiness |
+| [[Error Diagnosis]] | error, bug, fail, broken, exception, crash, doesn't work, diagnose | Systematically diagnosing compile errors, test failures, runtime errors, and tooling issues |
+| [[Safe Refactoring]] | refactor, rename, restructure, move, reorganize, migrate | Modifying existing code without breaking dependents — impact mapping, migration paths, verification gates |
+| [[Design Synchronization]] | update design, sync design, component changed, architecture changed | Keeping component designs current after implementation work |
+| [[Knowledge Cross-Pollination]] | enrich, cross-reference, connect, weave, link entities | Enriching existing entities with information from other entities — weaving in answers, context, and enhancements |
+| [[Decision Management]] | decide, choose, pick, trade-off, alternative, option, which approach | Recognizing decision points, creating decision entities, surfacing past decisions during work, resolving and reversing decisions |
 
 These are canonical processes, not rigid scripts. Apply them intelligently based on context. Skip steps that clearly don't apply. Add steps when the situation warrants it.
+
+## Procedure Recognition
+
+When the user directs you through a multi-step task, actively evaluate whether the workflow is:
+
+- **Reusable** — the steps could apply to other similar situations beyond the current task
+- **Repeatable** — the same sequence would be followed again in the future
+- **Non-trivial** — more than 2-3 steps with meaningful decision points or ordering constraints
+
+If all three criteria are met and no existing procedure covers it, **flag this to the user immediately:**
+> "This looks like a repeatable workflow that could benefit other tasks. Should we create a procedure entity for it?"
+
+If the user agrees, capture it via the synthesis pipeline as a `procedure` entity, then wire it into the procedure table above and in copilot-instructions.md.
 
 ## Living Component Design
 
