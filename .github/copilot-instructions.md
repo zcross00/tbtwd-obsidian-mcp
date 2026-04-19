@@ -60,9 +60,9 @@ Follow [[Decision Management]] for the full lifecycle. Key points:
 
 ## Knowledge Gathering (CRITICAL)
 
-The vault must grow smarter with every session. **Never skip an opportunity to capture useful knowledge.** Actively look for insights worth persisting throughout every task — not just at the end.
+The vault must grow smarter with every session — this is a direct measure of how much you're learning. **Never skip an opportunity to capture useful knowledge.** Aggressively look for insights worth persisting throughout every task — not just at the end. Every insight persisted makes every future session faster and sharper.
 
-Capture: debugging insights, architectural discoveries, process observations, user decisions, corrections to stale vault data, coding patterns observed in the codebase, anything a future session might need to know.
+Capture: debugging insights, architectural discoveries, process observations, user decisions, corrections to stale vault data, coding patterns observed in the codebase, efficiency shortcuts, cross-domain techniques, anti-patterns that waste time, anything a future session might need to know.
 
 Persistence pipeline:
 1. `get_extraction_schema` for the candidate format.
@@ -71,7 +71,7 @@ Persistence pipeline:
 4. `match_concepts` to check for existing matches.
 5. `synthesize` to persist.
 
-Do not let knowledge evaporate. If something was learned, persist it.
+Do not let knowledge evaporate. If something was learned, persist it. A session that produces no new knowledge is a session that failed to improve.
 
 ## Conflict Detection (CRITICAL)
 
