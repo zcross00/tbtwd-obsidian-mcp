@@ -8,6 +8,7 @@ import re
 import subprocess
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -486,3 +487,426 @@ class BrainVault:
                     })
 
         return broken
+
+    # -- tags.yml registry -------------------------------------------------
+
+    def read_tags(self) -> dict[str, list[dict[str, str]]]:
+        """Return the controlled tag vocabulary from tags.yml.
+
+        Returns {category: [{tag, description}, ...]}
+        """
+        tags_path = self.root / "tags.yml"
+        if not tags_path.exists():
+            raise FileNotFoundError("tags.yml not found in vault root")
+        return yaml.safe_load(tags_path.read_text(encoding="utf-8")) or {}
+
+    def _allowed_tags(self) -> set[str]:
+        """Return the flat set of all allowed tag names."""
+        allowed: set[str] = set()
+        for entries in self.read_tags().values():
+            for entry in entries:
+                allowed.add(entry["tag"])
+        return allowed
+
+    # -- extraction schema -------------------------------------------------
+
+    def read_extraction_schema(self) -> dict[str, Any]:
+        """Return the extraction schema from extraction-schema.yml."""
+        path = self.root / "extraction-schema.yml"
+        if not path.exists():
+            raise FileNotFoundError("extraction-schema.yml not found in vault root")
+        return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+
+    # -- match_concepts ----------------------------------------------------
+
+    def _build_entity_index(self) -> list[dict[str, Any]]:
+        """Build a lightweight index of all entities for matching.
+
+        Returns [{title, tags, path, type_folder, first_sentence}, ...]
+        """
+        index: list[dict[str, Any]] = []
+        for folder_name, path in self._iter_entity_files():
+            text = path.read_text(encoding="utf-8")
+            fm, body = _parse_frontmatter(text)
+            # First non-empty, non-heading line as a content fingerprint
+            first_sentence = ""
+            for line in body.strip().splitlines():
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    first_sentence = line[:200]
+                    break
+            index.append({
+                "title": fm.get("title", path.stem),
+                "name": path.stem,
+                "tags": [t.lower() for t in fm.get("tags", [])],
+                "type_folder": folder_name,
+                "path": str(path.relative_to(self.root)),
+                "status": fm.get("status", "unknown"),
+                "first_sentence": first_sentence,
+            })
+        return index
+
+    @staticmethod
+    def _title_normalize(title: str) -> str:
+        """Lowercase, strip non-alphanumeric for fuzzy comparison."""
+        return re.sub(r"[^a-z0-9]", "", title.lower())
+
+    def match_concepts(
+        self, candidates: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Match concept candidates against existing vault entities.
+
+        Each candidate should have at minimum: {title, tags}.
+        Optional: {type, claims, relationships}.
+
+        Returns candidates enriched with match info:
+        - disposition: 'new' | 'merge' | 'ambiguous'
+        - matched_entity: the existing entity path (if merge/ambiguous)
+        - match_reasons: why it matched
+        - tag_warnings: any tags not in the controlled vocabulary
+        """
+        entity_index = self._build_entity_index()
+        allowed_tags = self._allowed_tags()
+        results: list[dict[str, Any]] = []
+
+        for candidate in candidates:
+            c_title = candidate.get("title", "")
+            c_tags = {t.lower() for t in candidate.get("tags", [])}
+            c_norm = self._title_normalize(c_title)
+
+            # Validate tags against controlled vocabulary
+            tag_warnings = [t for t in c_tags if t not in allowed_tags]
+
+            best_match: dict[str, Any] | None = None
+            best_score = 0.0
+            match_reasons: list[str] = []
+
+            for entity in entity_index:
+                score = 0.0
+                reasons: list[str] = []
+                e_norm = self._title_normalize(entity["title"])
+                e_name_norm = self._title_normalize(entity["name"])
+
+                # Exact title match (strongest signal)
+                if c_norm == e_norm or c_norm == e_name_norm:
+                    score += 1.0
+                    reasons.append("exact_title")
+                # Substring containment (one contains the other)
+                elif c_norm in e_norm or e_norm in c_norm:
+                    score += 0.6
+                    reasons.append("title_substring")
+                # Shared significant words (3+ char words)
+                else:
+                    c_words = {w for w in re.findall(r"[a-z]{3,}", c_norm)}
+                    e_words = {w for w in re.findall(r"[a-z]{3,}", e_norm)}
+                    if c_words and e_words:
+                        overlap = len(c_words & e_words) / len(c_words | e_words)
+                        if overlap >= 0.4:
+                            score += 0.3 * overlap
+                            reasons.append(f"word_overlap({overlap:.0%})")
+
+                # Tag overlap
+                e_tags = set(entity["tags"])
+                if c_tags and e_tags:
+                    tag_overlap = len(c_tags & e_tags) / len(c_tags | e_tags)
+                    if tag_overlap > 0:
+                        score += 0.3 * tag_overlap
+                        reasons.append(f"tag_overlap({tag_overlap:.0%})")
+
+                if score > best_score:
+                    best_score = score
+                    best_match = entity
+                    match_reasons = reasons
+
+            # Determine disposition
+            if best_score >= 0.8:
+                disposition = "merge"
+            elif best_score >= 0.4:
+                disposition = "ambiguous"
+            else:
+                disposition = "new"
+
+            result: dict[str, Any] = {
+                **candidate,
+                "disposition": disposition,
+                "match_score": round(best_score, 3),
+                "match_reasons": match_reasons if best_match else [],
+            }
+            if tag_warnings:
+                result["tag_warnings"] = tag_warnings
+            if best_match and disposition != "new":
+                result["matched_entity"] = {
+                    "title": best_match["title"],
+                    "path": best_match["path"],
+                    "status": best_match["status"],
+                    "first_sentence": best_match["first_sentence"],
+                }
+
+            results.append(result)
+
+        return results
+
+    # -- synthesize --------------------------------------------------------
+
+    def synthesize(
+        self, candidates: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Create or merge concept candidates into the vault.
+
+        Each candidate must have been through match_concepts first and include:
+        - title (str): entity title
+        - disposition (str): 'new' or 'merge'
+        - tags (list[str]): from controlled vocabulary
+        - claims (list[str]): atomic factual statements
+        - relationships (list[str]): wiki-link targets
+
+        For 'new': creates a new entity file with frontmatter + body from claims.
+        For 'merge': appends novel claims and unions tags into existing entity.
+        Skips 'ambiguous' candidates — those need agent resolution first.
+
+        Returns a result per candidate with status and any warnings.
+        """
+        allowed_tags = self._allowed_tags()
+        results: list[dict[str, Any]] = []
+
+        for candidate in candidates:
+            disposition = candidate.get("disposition")
+            title = candidate.get("title", "")
+
+            if disposition == "ambiguous":
+                results.append({
+                    "title": title,
+                    "action": "skipped",
+                    "reason": "ambiguous — resolve match before synthesizing",
+                })
+                continue
+
+            if not title:
+                results.append({"action": "error", "reason": "missing title"})
+                continue
+
+            # Validate tags
+            c_tags = candidate.get("tags", [])
+            valid_tags = [t for t in c_tags if t.lower() in allowed_tags]
+            invalid_tags = [t for t in c_tags if t.lower() not in allowed_tags]
+
+            claims = candidate.get("claims", [])
+            relationships = candidate.get("relationships", [])
+            entity_type = candidate.get("type", "concept")
+
+            if disposition == "new":
+                result = self._synthesize_new(
+                    title=title,
+                    entity_type=entity_type,
+                    tags=valid_tags,
+                    claims=claims,
+                    relationships=relationships,
+                )
+            elif disposition == "merge":
+                matched = candidate.get("matched_entity", {})
+                entity_path = matched.get("path", "")
+                if not entity_path:
+                    results.append({
+                        "title": title,
+                        "action": "error",
+                        "reason": "merge disposition but no matched_entity path",
+                    })
+                    continue
+                result = self._synthesize_merge(
+                    entity_path=entity_path,
+                    new_tags=valid_tags,
+                    new_claims=claims,
+                    new_relationships=relationships,
+                )
+            else:
+                results.append({
+                    "title": title,
+                    "action": "error",
+                    "reason": f"unknown disposition: {disposition}",
+                })
+                continue
+
+            if invalid_tags:
+                result["tag_warnings"] = [
+                    f"tag '{t}' not in controlled vocabulary — dropped"
+                    for t in invalid_tags
+                ]
+            results.append(result)
+
+        return results
+
+    def _synthesize_new(
+        self,
+        *,
+        title: str,
+        entity_type: str,
+        tags: list[str],
+        claims: list[str],
+        relationships: list[str],
+    ) -> dict[str, Any]:
+        """Create a brand-new entity file from a concept candidate."""
+        # Determine folder
+        type_folder = self.root / entity_type
+        if not type_folder.is_dir():
+            type_folder.mkdir(parents=True, exist_ok=True)
+
+        file_path = type_folder / f"{title}.md"
+        if file_path.exists():
+            return {
+                "title": title,
+                "action": "error",
+                "reason": f"file already exists: {file_path.relative_to(self.root)}",
+            }
+
+        # Build frontmatter
+        active = self._active_project()
+        fm: dict[str, Any] = {
+            "title": title,
+            "guid": str(uuid.uuid4()),
+            "type": [entity_type],
+            "status": entity_type if entity_type in ("concept", "drift") else "draft",
+            "tags": tags,
+        }
+        if active:
+            fm["project"] = [active]
+
+        # Build body from claims
+        body_lines = [f"# {title}", ""]
+        if claims:
+            for claim in claims:
+                body_lines.append(f"- {claim}")
+            body_lines.append("")
+
+        # Add relationships as a Related section
+        if relationships:
+            body_lines.append("## Related")
+            body_lines.append("")
+            for rel in relationships:
+                # Normalize: wrap in [[ ]] if not already
+                if not rel.startswith("[["):
+                    rel = f"[[{rel}]]"
+                body_lines.append(f"- {rel}")
+            body_lines.append("")
+
+        body = "\n".join(body_lines)
+        text = _serialize_frontmatter(fm, body)
+        warnings = self._validate_links(text)
+
+        file_path.write_text(text, encoding="utf-8")
+
+        # Commit
+        git_info = self._commit_and_push(
+            file_path, f"synthesize new: {title}"
+        )
+
+        return {
+            "title": title,
+            "action": "created",
+            "path": str(file_path.relative_to(self.root)),
+            "guid": fm["guid"],
+            "claims_count": len(claims),
+            "warnings": warnings,
+            **git_info,
+        }
+
+    def _synthesize_merge(
+        self,
+        *,
+        entity_path: str,
+        new_tags: list[str],
+        new_claims: list[str],
+        new_relationships: list[str],
+    ) -> dict[str, Any]:
+        """Merge new claims and tags into an existing entity. Additive only."""
+        path = self.root / entity_path
+        if not path.exists():
+            return {
+                "path": entity_path,
+                "action": "error",
+                "reason": f"file not found: {entity_path}",
+            }
+
+        text = path.read_text(encoding="utf-8")
+        fm, body = _parse_frontmatter(text)
+
+        # --- Union tags (additive) ---
+        existing_tags = [t.lower() for t in fm.get("tags", [])]
+        added_tags = [t for t in new_tags if t.lower() not in existing_tags]
+        if added_tags:
+            fm["tags"] = fm.get("tags", []) + added_tags
+
+        # --- Append novel claims ---
+        # Check each claim against existing body to avoid duplicates.
+        # Use normalized substring matching — if the core words of a claim
+        # already appear in the body, consider it a duplicate.
+        body_lower = body.lower()
+        novel_claims: list[str] = []
+        duplicate_claims: list[str] = []
+        for claim in new_claims:
+            # Extract significant words (4+ chars) for fuzzy matching
+            claim_words = set(re.findall(r"[a-z]{4,}", claim.lower()))
+            if not claim_words:
+                novel_claims.append(claim)
+                continue
+            # If 70%+ of significant words appear in existing body, it's a dup
+            matches = sum(1 for w in claim_words if w in body_lower)
+            if matches / len(claim_words) >= 0.7:
+                duplicate_claims.append(claim)
+            else:
+                novel_claims.append(claim)
+
+        if novel_claims:
+            # Append under a "## Synthesized" section
+            synth_header = "\n## Synthesized\n\n"
+            if "## Synthesized" in body:
+                # Append to existing synthesized section
+                for claim in novel_claims:
+                    body += f"\n- {claim}"
+            else:
+                body += synth_header
+                for claim in novel_claims:
+                    body += f"- {claim}\n"
+
+        # --- Add novel relationships ---
+        existing_links = set(extract_wikilinks(text))
+        novel_links: list[str] = []
+        for rel in new_relationships:
+            link_target = rel.strip("[]")
+            if link_target not in existing_links:
+                novel_links.append(rel)
+
+        if novel_links:
+            # Find or create Related section
+            if "## Related" in body:
+                # Append to existing Related section
+                for rel in novel_links:
+                    if not rel.startswith("[["):
+                        rel = f"[[{rel}]]"
+                    body += f"\n- {rel}"
+            else:
+                body += "\n## Related\n\n"
+                for rel in novel_links:
+                    if not rel.startswith("[["):
+                        rel = f"[[{rel}]]"
+                    body += f"- {rel}\n"
+
+        new_text = _serialize_frontmatter(fm, body)
+        warnings = self._validate_links(new_text)
+        path.write_text(new_text, encoding="utf-8")
+
+        entity_id = fm.get("id", path.stem)
+        git_info = self._commit_and_push(
+            path, f"synthesize merge: {entity_id}"
+        )
+
+        return {
+            "title": fm.get("title", path.stem),
+            "action": "merged",
+            "path": entity_path,
+            "added_tags": added_tags,
+            "novel_claims": len(novel_claims),
+            "duplicate_claims": len(duplicate_claims),
+            "novel_links": len(novel_links),
+            "warnings": warnings,
+            **git_info,
+        }

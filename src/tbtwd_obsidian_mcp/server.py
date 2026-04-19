@@ -56,11 +56,23 @@ WHEN TO WRITE:
 - Drift: when open questions or risks surface, flag them.
 - Metadata: when new relationships emerge, update tags, serves, depends-on.
 
+SYNTHESIZING NEW KNOWLEDGE:
+When new concepts, decisions, or patterns emerge from conversation or work:
+1. Call get_extraction_schema to get the candidate format and rules.
+2. Call list_tags to get the controlled tag vocabulary.
+3. Extract candidates following the schema — atomic claims, specific titles, valid tags.
+4. Call match_concepts with candidates to check for existing matches.
+5. For 'ambiguous' matches: call get_context on the matched entity, then decide new vs merge.
+6. Call synthesize with resolved candidates to persist them.
+This pipeline ensures consistent, deterministic knowledge capture regardless of input source.
+
 RULES:
 - Don't fabricate entity content — read first, update what exists.
 - Don't skip get_brief — orientation before action.
 - Don't update guid fields — permanent identifiers.
 - Don't bulk-update without user awareness — mention what you're persisting.
+- Don't use tags outside the controlled vocabulary (tags.yml).
+- Don't synthesize without matching first — always preview with match_concepts.
 
 ENTITY STRUCTURE: Entities live in type folders (concept/, decision/, drift/, feature/, \
 goal/, system/). Each is a markdown file with YAML frontmatter (guid, id, title, status, \
@@ -198,6 +210,81 @@ def check_links() -> str:
     if not broken:
         return json.dumps({"status": "ok", "message": "No broken links found"})
     return json.dumps({"status": "broken_links_found", "count": len(broken), "broken": broken}, indent=2)
+
+
+@mcp.tool()
+def list_tags() -> str:
+    """Return the controlled tag vocabulary from tags.yml.
+
+    Shows all allowed tags organized by category with descriptions.
+    Use before synthesize to ensure candidates use valid tags.
+    """
+    vault = _get_vault()
+    tags = vault.read_tags()
+    return json.dumps(tags, indent=2, default=str)
+
+
+@mcp.tool()
+def get_extraction_schema() -> str:
+    """Return the extraction schema that defines how to produce concept candidates.
+
+    The schema specifies the exact structure a candidate must have for
+    match_concepts and synthesize to accept it. Use this to ensure
+    deterministic, consistent concept extraction from any input.
+    """
+    vault = _get_vault()
+    schema = vault.read_extraction_schema()
+    return json.dumps(schema, indent=2, default=str)
+
+
+@mcp.tool()
+def match_concepts(candidates: list[dict]) -> str:
+    """Match concept candidates against existing vault entities.
+
+    Takes a list of concept candidates (each with at minimum title and tags)
+    and returns them enriched with match information:
+    - disposition: 'new' (no match), 'merge' (strong match), or 'ambiguous' (needs review)
+    - matched_entity: the existing entity details (for merge/ambiguous)
+    - match_score: 0.0-1.0 confidence
+    - tag_warnings: any tags not in the controlled vocabulary
+
+    Args:
+        candidates: List of concept candidates. Each should have:
+            - title (str): concept name
+            - tags (list[str]): from controlled vocabulary (use list_tags)
+            - claims (list[str]): atomic factual statements (optional for matching)
+            - relationships (list[str]): wiki-link targets (optional for matching)
+            - type (str): entity type, defaults to 'concept'
+
+    Call this BEFORE synthesize to preview what will happen.
+    Resolve any 'ambiguous' results before proceeding to synthesize.
+    """
+    vault = _get_vault()
+    results = vault.match_concepts(candidates)
+    return json.dumps(results, indent=2, default=str)
+
+
+@mcp.tool()
+def synthesize(candidates: list[dict]) -> str:
+    """Create or merge concept candidates into the vault.
+
+    Each candidate must include a disposition from match_concepts:
+    - 'new': creates a new entity file with frontmatter + claims body
+    - 'merge': appends novel claims and unions tags into existing entity (additive only)
+    - 'ambiguous': skipped — resolve the match first
+
+    Args:
+        candidates: List of candidates that have been through match_concepts.
+            Required fields: title, disposition, tags, claims.
+            For merge: must include matched_entity.path from match_concepts output.
+            Optional: relationships (list of wiki-link targets), type (entity type).
+
+    Validates tags against controlled vocabulary. Commits and pushes changes.
+    Returns per-candidate results with action taken and any warnings.
+    """
+    vault = _get_vault()
+    results = vault.synthesize(candidates)
+    return json.dumps(results, indent=2, default=str)
 
 
 # ---------------------------------------------------------------------------
