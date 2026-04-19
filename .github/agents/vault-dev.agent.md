@@ -168,3 +168,4 @@ Before implementing any significant change:
 - DO NOT follow procedures rigidly when the situation clearly doesn't warrant it — use judgment
 - DO synthesize new knowledge only after matching against existing entities first
 - DO persist knowledge continuously, not just at session end
+- DO follow [[Vault Access Via MCP Only]] — never read or write vault files directly, always use MCP tools. If the server can't do what you need, enhance it first.

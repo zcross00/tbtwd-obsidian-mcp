@@ -86,3 +86,7 @@ When modifying the MCP server code (`src/tbtwd_obsidian_mcp/`):
 - Tools should return scoped, minimal context to stay within token budgets
 - Search the vault for related `lesson` and `procedure` entities before debugging
 - Check `drift` entities for known open questions before implementing uncertain features
+
+## Vault Access Rule
+
+Per [[Vault Access Via MCP Only]]: **never interact with vault files directly.** All reads go through MCP tools (`get_context`, `query`, `search`, etc.). All writes go through MCP tools (`update_memory`, `synthesize`). If the MCP server can't do what you need, enhance the server first, then use the new tool. Direct file manipulation bypasses validation, schema enforcement, and git management.
