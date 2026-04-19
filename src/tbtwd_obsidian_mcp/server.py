@@ -72,7 +72,13 @@ WRITING:
 - update_body: update or create a named section in an entity's markdown body. Replaces existing \
 sections or inserts new ones. Auto-validates links, commits, and pushes.
 - archive_entity: move an entity to .trash/ preserving type folder structure. Archived entities \
-are excluded from all retrieval. Reports incoming links that will break.
+are excluded from all retrieval by default. Reports incoming links that will break.
+
+QUERYING ARCHIVED ENTITIES:
+- query, search, and get_context accept an optional include_archived=True parameter.
+- Default is False — archived entities are invisible unless explicitly requested.
+- Use include_archived=True only when you need details of a previously archived entity \
+(e.g. reviewing an old decision's rationale).
 
 WHEN TO WRITE:
 - Status changes: when work moves forward, update status.
@@ -170,18 +176,20 @@ def list_types() -> str:
 
 
 @mcp.tool()
-def get_context(entity_id: str) -> str:
+def get_context(entity_id: str, include_archived: bool = False) -> str:
     """Return the full entity for the given ID plus one-level-deep linked synopses.
 
     Args:
         entity_id: Entity identifier — a filename slug (e.g. 'storage-layer'),
             a path (e.g. 'systems/storage-layer'), or a frontmatter ID (e.g. 'S-1').
+        include_archived: When True, also searches entities archived to .trash/.
+            Default False — use only when looking up a specific archived entity.
 
     Returns entity content with frontmatter, body, and synopsis of each
     directly linked entity (~400-800 tokens).
     """
     vault = _get_vault()
-    ctx = vault.get_context(entity_id)
+    ctx = vault.get_context(entity_id, include_archived=include_archived)
     return json.dumps(ctx, indent=2, default=str)
 
 
@@ -192,6 +200,7 @@ def query(
     status: str | None = None,
     entity_type: str | None = None,
     project: str | None = None,
+    include_archived: bool = False,
 ) -> str:
     """Scan frontmatter across all entity files and return matching synopses.
 
@@ -206,12 +215,17 @@ def query(
         status: Filter by status (e.g. "In Progress", "concept").
         entity_type: Filter by type folder (e.g. "system", "goal", "decision", "concept", "feature", "drift").
         project: Override the active project for relevance sorting. Defaults to active-project from brief.yml.
+        include_archived: When True, also includes entities archived to .trash/.
+            Default False — use only when you need to find old/retired entities.
 
     Returns a compact list of matching IDs with one-line synopses.
     Use get_context() to drill into specific results.
     """
     vault = _get_vault()
-    results = vault.query(tag=tag, goal=goal, status=status, entity_type=entity_type, project=project)
+    results = vault.query(
+        tag=tag, goal=goal, status=status, entity_type=entity_type,
+        project=project, include_archived=include_archived,
+    )
     return json.dumps(results, indent=2, default=str)
 
 
@@ -294,6 +308,7 @@ def search(
     entity_type: str | None = None,
     tag: str | None = None,
     max_results: int = 10,
+    include_archived: bool = False,
 ) -> str:
     """Search entity titles and body text for keywords.
 
@@ -307,12 +322,17 @@ def search(
         entity_type: Optional filter by type (e.g. "lesson", "procedure", "concept").
         tag: Optional filter by tag.
         max_results: Maximum results to return (default 10).
+        include_archived: When True, also searches entities archived to .trash/.
+            Default False — use only when looking for old/retired knowledge.
 
     Returns ranked results with title, path, type, relevance score, and a
     context snippet showing where the match was found.
     """
     vault = _get_vault()
-    results = vault.search(text, entity_type=entity_type, tag=tag, max_results=max_results)
+    results = vault.search(
+        text, entity_type=entity_type, tag=tag,
+        max_results=max_results, include_archived=include_archived,
+    )
     return json.dumps(results, indent=2, default=str)
 
 

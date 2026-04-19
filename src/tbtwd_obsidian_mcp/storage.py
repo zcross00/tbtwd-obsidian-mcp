@@ -302,20 +302,38 @@ class BrainVault:
             if d.is_dir() and d.name not in _IGNORED_ROOTS and not d.name.startswith(".")
         ]
 
-    def _iter_entity_files(self) -> list[tuple[str, Path]]:
-        """Return (type_folder, path) for every .md entity file in type folders."""
+    def _iter_entity_files(
+        self, *, include_archived: bool = False
+    ) -> list[tuple[str, Path]]:
+        """Return (type_folder, path) for every .md entity file in type folders.
+
+        When *include_archived* is True, also yields entities that have been
+        moved to ``.trash/<type>/`` by ``archive_entity``.
+        """
         results: list[tuple[str, Path]] = []
         for folder_name in sorted(self._type_folders()):
             folder = self.root / folder_name
             for p in sorted(folder.iterdir()):
                 if p.is_file() and p.suffix == ".md" and p.name != "_index.md":
                     results.append((folder_name, p))
+        if include_archived:
+            trash_dir = self.root / ".trash"
+            if trash_dir.is_dir():
+                for type_dir in sorted(trash_dir.iterdir()):
+                    if type_dir.is_dir():
+                        for p in sorted(type_dir.iterdir()):
+                            if p.is_file() and p.suffix == ".md":
+                                results.append((type_dir.name, p))
         return results
 
-    def _resolve_entity_path(self, identifier: str) -> Path | None:
+    def _resolve_entity_path(
+        self, identifier: str, *, include_archived: bool = False
+    ) -> Path | None:
         """Resolve an entity by filename stem (e.g. 'Storage Layer'),
         by type/filename path (e.g. 'system/Storage Layer'),
         by frontmatter id (e.g. 'S-1'), or by guid.
+
+        When *include_archived* is True, also searches ``.trash/``.
         """
         # Direct path match (e.g. "system/Storage Layer" or "system/Storage Layer.md")
         for ext in ("", ".md"):
@@ -324,12 +342,12 @@ class BrainVault:
                 return p
 
         # Match by filename stem across all type folders
-        for _, path in self._iter_entity_files():
+        for _, path in self._iter_entity_files(include_archived=include_archived):
             if path.stem == identifier:
                 return path
 
         # Match by frontmatter id or guid
-        for _, path in self._iter_entity_files():
+        for _, path in self._iter_entity_files(include_archived=include_archived):
             text = path.read_text(encoding="utf-8")
             fm, _ = _parse_frontmatter(text)
             if fm.get("id") == identifier or fm.get("guid") == identifier:
@@ -337,9 +355,13 @@ class BrainVault:
 
         return None
 
-    def read_entity(self, identifier: str) -> dict[str, Any]:
+    def read_entity(
+        self, identifier: str, *, include_archived: bool = False
+    ) -> dict[str, Any]:
         """Read an entity file and return {guid, id, frontmatter, body, links, path}."""
-        path = self._resolve_entity_path(identifier)
+        path = self._resolve_entity_path(
+            identifier, include_archived=include_archived
+        )
         if path is None:
             raise FileNotFoundError(f"Entity '{identifier}' not found in vault")
 
@@ -370,9 +392,11 @@ class BrainVault:
             "status": fm.get("status", "unknown"),
         }
 
-    def get_context(self, entity_id: str) -> dict[str, Any]:
+    def get_context(
+        self, entity_id: str, *, include_archived: bool = False
+    ) -> dict[str, Any]:
         """Return the entity + one-level-deep synopses of linked entities."""
-        entity = self.read_entity(entity_id)
+        entity = self.read_entity(entity_id, include_archived=include_archived)
 
         # Resolve linked entities from wiki-links
         linked_synopses: list[dict[str, Any]] = []
@@ -399,6 +423,7 @@ class BrainVault:
         status: str | None = None,
         entity_type: str | None = None,
         project: str | None = None,
+        include_archived: bool = False,
     ) -> list[dict[str, Any]]:
         """Scan frontmatter across all concept files. Return matching synopses.
 
@@ -410,7 +435,9 @@ class BrainVault:
         active = project or self._active_project()
         matches: list[dict[str, Any]] = []
 
-        for folder_name, path in self._iter_entity_files():
+        for folder_name, path in self._iter_entity_files(
+            include_archived=include_archived
+        ):
             text = path.read_text(encoding="utf-8")
             fm, _ = _parse_frontmatter(text)
 
@@ -438,6 +465,7 @@ class BrainVault:
 
             entity_id = fm.get("id", path.stem)
             relevance = self._entity_relevance(fm, active)
+            is_archived = ".trash" in path.parts
 
             entry: dict[str, Any] = {
                 "guid": fm.get("guid"),
@@ -445,6 +473,8 @@ class BrainVault:
                 "title": fm.get("title", entity_id),
                 "relevance": relevance,
             }
+            if is_archived:
+                entry["archived"] = True
             # Active and universal get full synopsis; background gets minimal
             if relevance != "background":
                 entry["status"] = fm.get("status", "unknown")
@@ -725,6 +755,7 @@ class BrainVault:
         entity_type: str | None = None,
         tag: str | None = None,
         max_results: int = 10,
+        include_archived: bool = False,
     ) -> list[dict[str, Any]]:
         """Search entity titles and body text for keywords.
 
@@ -745,7 +776,9 @@ class BrainVault:
 
         scored: list[tuple[float, dict[str, Any]]] = []
 
-        for folder_name, path in self._iter_entity_files():
+        for folder_name, path in self._iter_entity_files(
+            include_archived=include_archived
+        ):
             # Apply entity_type filter early
             if entity_type and entity_type.lower() != folder_name.lower():
                 continue
@@ -799,7 +832,7 @@ class BrainVault:
                     snippet = raw
                     break
 
-            scored.append((score, {
+            result_entry: dict[str, Any] = {
                 "title": title,
                 "path": str(path.relative_to(self.root)),
                 "type": folder_name,
@@ -807,7 +840,10 @@ class BrainVault:
                 "score": round(score, 2),
                 "matched_words": list(set(matched_words)),
                 "snippet": snippet,
-            }))
+            }
+            if ".trash" in path.parts:
+                result_entry["archived"] = True
+            scored.append((score, result_entry))
 
         # Sort by score descending, then by title alphabetically
         scored.sort(key=lambda x: (-x[0], x[1]["title"]))

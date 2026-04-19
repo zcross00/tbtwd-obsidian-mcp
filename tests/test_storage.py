@@ -954,3 +954,44 @@ class TestArchiveEntity:
         # Can't archive again — already in trash
         with pytest.raises(FileNotFoundError):
             vault.archive_entity("YAML For Data")
+
+    def test_search_include_archived(self, vault: BrainVault):
+        vault.archive_entity("YAML For Data")
+        # Default: excluded
+        results = vault.search("YAML")
+        assert not any(r["title"] == "YAML for data, markdown for prose" for r in results)
+        # With include_archived: found, marked as archived
+        results = vault.search("YAML", include_archived=True)
+        archived = [r for r in results if r["title"] == "YAML for data, markdown for prose"]
+        assert len(archived) == 1
+        assert archived[0]["archived"] is True
+
+    def test_query_include_archived(self, vault: BrainVault):
+        vault.archive_entity("YAML For Data")
+        # Default: excluded
+        results = vault.query(entity_type="decision")
+        assert not any(r["id"] == "YAML For Data" for r in results)
+        # With include_archived: found, marked as archived
+        results = vault.query(entity_type="decision", include_archived=True)
+        archived = [r for r in results if r["id"] == "YAML For Data"]
+        assert len(archived) == 1
+        assert archived[0]["archived"] is True
+
+    def test_get_context_include_archived(self, vault: BrainVault):
+        vault.archive_entity("YAML For Data")
+        # Default: not found
+        with pytest.raises(FileNotFoundError):
+            vault.get_context("YAML For Data")
+        # With include_archived: found
+        ctx = vault.get_context("YAML For Data", include_archived=True)
+        assert ctx["id"] == "YAML For Data"
+        assert ".trash" in ctx["path"]
+
+    def test_active_entities_not_marked_archived(self, vault: BrainVault):
+        """Active entities should not have the archived flag in query/search results."""
+        results = vault.query(entity_type="concept")
+        for r in results:
+            assert "archived" not in r
+        results = vault.search("Token")
+        for r in results:
+            assert "archived" not in r
