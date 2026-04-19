@@ -33,13 +33,16 @@ mcp = FastMCP(
 Persistent memory vault for The Brain That Wouldn't Die.
 
 SESSION START: Always call get_brief first. It returns the active project, goals, \
-focus area, and backlog — your L0 orientation context.
+focus area, backlog, AND suggested next tool calls — your L0 orientation context. \
+Follow the next_steps list to load relevant context before acting.
 
 READING:
 - list_types: discover entity categories (goal, system, concept, decision, feature, drift, pattern, procedure, lesson) with counts.
 - query: find entities by entity_type, status, tag, or project. Results sorted by project relevance.
 - search: find entities by keyword across titles and body text. Use when you don't know the exact tag.
 - get_context: drill into an entity by name, frontmatter ID, or GUID. Returns full content + linked synopses.
+- get_relevant_context: ONE-CALL aggregation — pass a topic and get all relevant entities, decisions, drift, \
+and coverage gaps in a single response. Use this instead of separate search → get_context chains.
 - check_links: scan for broken [[wiki-links]].
 
 WHEN TO READ:
@@ -48,6 +51,19 @@ WHEN TO READ:
 - When encountering a problem — search for lessons and procedures that may already cover it.
 - When the user references something that might be in the vault — look it up.
 - Follow [[wiki-links]] in entity bodies to discover related context.
+
+PRE-ACTION VALIDATION:
+- validate_action: CALL THIS before implementing significant changes. Pass your intended \
+action and rationale. The tool checks for conflicting decisions, relevant lessons, \
+and existing patterns. Returns 'proceed', 'review', or 'conflict'.
+- If status is 'conflict': STOP and review the conflicting entities before proceeding.
+- If status is 'review': read the supporting entities for additional context.
+- If status is 'proceed': safe to continue, but consider persisting your rationale.
+
+DECISION AUDIT TRAIL:
+- ALWAYS cite vault entities when they inform your decisions: "Per [[Entity Title]], using approach X."
+- If no vault precedent exists, EXPLICITLY state: "No vault precedent found for X."
+- After significant decisions, persist the rationale using the synthesis pipeline.
 
 WRITING:
 - update_memory: update an entity's YAML frontmatter. Auto-validates links, commits, and pushes to GitHub.
@@ -74,10 +90,12 @@ This pipeline ensures consistent, deterministic knowledge capture regardless of 
 RULES:
 - Don't fabricate entity content — read first, update what exists.
 - Don't skip get_brief — orientation before action.
+- Don't skip validate_action — check before significant changes.
 - Don't update guid fields — permanent identifiers.
 - Don't bulk-update without user awareness — mention what you're persisting.
 - Don't use tags outside the controlled vocabulary (tags.yml).
 - Don't synthesize without matching first — always preview with match_concepts.
+- Don't let knowledge evaporate — if something was learned, persist it.
 
 ENTITY STRUCTURE: Entities live in type folders (concept/, decision/, drift/, feature/, \
 goal/, system/). Each is a markdown file with YAML frontmatter (guid, id, title, status, \
@@ -319,6 +337,59 @@ def synthesize(candidates: list[dict]) -> str:
     vault = _get_vault()
     results = vault.synthesize(candidates)
     return json.dumps(results, indent=2, default=str)
+
+
+@mcp.tool()
+def get_relevant_context(
+    topic: str,
+    max_entities: int = 5,
+    include_types: list[str] | None = None,
+) -> str:
+    """Single-call aggregation: get all vault context relevant to a topic.
+
+    Combines search + query + context loading into one tool call, returning
+    the most relevant entities, their linked synopses, related decisions,
+    open drift items, and any coverage gaps. Use this instead of separate
+    search → get_context chains to reduce tool call overhead.
+
+    Args:
+        topic: Natural-language description of what you're working on or
+            deciding about. Be specific — "combat action resolution" is
+            better than "combat".
+        max_entities: Maximum number of full entities to return (default 5).
+        include_types: Optional list of entity types to prioritize
+            (e.g. ["decision", "lesson", "pattern"]).
+
+    Returns entities with full content, linked synopses, applicable decisions,
+    open drift items, and any aspects of the topic with no vault coverage.
+    """
+    vault = _get_vault()
+    results = vault.get_relevant_context(
+        topic, max_entities=max_entities, include_types=include_types
+    )
+    return json.dumps(results, indent=2, default=str)
+
+
+@mcp.tool()
+def validate_action(action: str, rationale: str) -> str:
+    """Pre-action validation: check the vault for conflicts before acting.
+
+    Call this before implementing significant changes. Searches the vault
+    for decisions, patterns, lessons, and drift entries that may conflict
+    with or inform your proposed action.
+
+    Returns one of three statuses:
+    - 'proceed': no conflicts found (consider persisting the rationale)
+    - 'review': found supporting or informational entities worth reading
+    - 'conflict': found decisions or lessons that may contradict your plan
+
+    Args:
+        action: What you intend to do (e.g. "Add caching layer to query tool").
+        rationale: Why you chose this approach (e.g. "Reduce repeated file I/O").
+    """
+    vault = _get_vault()
+    result = vault.validate_action(action, rationale)
+    return json.dumps(result, indent=2, default=str)
 
 
 # ---------------------------------------------------------------------------

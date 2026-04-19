@@ -206,11 +206,43 @@ class BrainVault:
     # -- brief.yml (L0) ----------------------------------------------------
 
     def read_brief(self) -> dict[str, Any]:
-        """Return the parsed contents of brief.yml."""
+        """Return the parsed contents of brief.yml with task-dispatch hints.
+
+        Enriches the raw brief with 'next_steps' — suggested tool calls
+        based on the current focus area and active project.
+        """
         brief_path = self.root / "brief.yml"
         if not brief_path.exists():
             raise FileNotFoundError("brief.yml not found in vault root")
-        return yaml.safe_load(brief_path.read_text(encoding="utf-8")) or {}
+        brief = yaml.safe_load(brief_path.read_text(encoding="utf-8")) or {}
+
+        # Strategy 6: Generate context-aware next steps from focus area
+        focus = brief.get("focus", "")
+        active_project = brief.get("active-project", "")
+        next_steps: list[str] = []
+
+        if focus:
+            next_steps.append(
+                f'search(text="{focus}") — find vault entities related to current focus'
+            )
+
+        if active_project:
+            next_steps.append(
+                f'query(project="{active_project}", entity_type="decision") — load active decisions'
+            )
+            next_steps.append(
+                f'query(project="{active_project}", entity_type="drift") — check open questions'
+            )
+
+        # Always suggest checking goals
+        goals = brief.get("goals", {})
+        for goal_id in goals:
+            next_steps.append(
+                f'get_context("{goal_id}") — load goal details and linked entities'
+            )
+
+        brief["next_steps"] = next_steps
+        return brief
 
     def _active_project(self) -> str | None:
         """Return the active-project from brief.yml, or None."""
@@ -1030,4 +1062,188 @@ class BrainVault:
             "duplicate_claims": len(duplicate_claims),
             "novel_links": len(novel_links),
             "warnings": warnings,
+        }
+
+    # -- get_relevant_context (Strategy 3) ---------------------------------
+
+    def get_relevant_context(
+        self,
+        topic: str,
+        *,
+        max_entities: int = 5,
+        include_types: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Single-call aggregation: search + query + context for a topic.
+
+        Combines keyword search, tag-based querying, and full entity loading
+        into one tool call. Returns the most relevant vault context for a
+        given topic, reducing the cost from 2-3 tool calls to 1.
+
+        Args:
+            topic: Natural-language description of what the agent is working on.
+            max_entities: Maximum full entities to return (default 5).
+            include_types: Optional filter to specific entity types
+                (e.g. ["decision", "lesson"]).
+
+        Returns a dict with:
+            - entities: full content of the top-N most relevant entities
+            - related: synopses of entities linked from the top results
+            - decisions: any decision entities that apply
+            - drift: any open questions/risks that apply
+            - coverage_gaps: aspects of the topic with no vault coverage
+        """
+        # 1. Search for keyword matches
+        search_results = self.search(
+            topic, max_results=max_entities * 2
+        )
+
+        # 2. Filter by type if requested
+        if include_types:
+            lower_types = [t.lower() for t in include_types]
+            search_results = [
+                r for r in search_results
+                if r.get("type", "").lower() in lower_types
+            ] or search_results  # fall back to unfiltered if filter empties list
+
+        # 3. Load full context for the top N entities
+        top_paths = [r["path"] for r in search_results[:max_entities]]
+        entities: list[dict[str, Any]] = []
+        all_linked: set[str] = set()
+
+        for path_str in top_paths:
+            # Resolve by path stem
+            stem = Path(path_str).stem
+            try:
+                ctx = self.get_context(stem)
+                entities.append(ctx)
+                # Track linked entities for the related section
+                for linked in ctx.get("linked_entities", []):
+                    linked_title = linked.get("title", "")
+                    if linked_title and linked_title not in {
+                        e.get("frontmatter", {}).get("title") for e in entities
+                    }:
+                        all_linked.add(linked_title)
+            except FileNotFoundError:
+                continue
+
+        # 4. Separately find decisions and drift entries related to the topic
+        decisions = self.search(
+            topic, entity_type="decision", max_results=3
+        )
+        drift = self.search(
+            topic, entity_type="drift", max_results=3
+        )
+
+        # 5. Identify coverage gaps — query words that matched nothing
+        query_words = {w.lower() for w in re.findall(r"[a-zA-Z0-9]{3,}", topic)}
+        covered_words: set[str] = set()
+        for entity in entities:
+            title_lower = entity.get("frontmatter", {}).get("title", "").lower()
+            body_lower = entity.get("body", "").lower()
+            for word in query_words:
+                if word in title_lower or word in body_lower:
+                    covered_words.add(word)
+        uncovered = query_words - covered_words
+        coverage_gaps = list(uncovered) if uncovered else []
+
+        # 6. Build related synopses from linked entities not in the top results
+        related_synopses: list[dict[str, Any]] = []
+        for linked_title in sorted(all_linked)[:10]:
+            syn = self._synopsis(linked_title)
+            if syn:
+                related_synopses.append(syn)
+
+        return {
+            "topic": topic,
+            "entity_count": len(entities),
+            "entities": entities,
+            "related": related_synopses,
+            "decisions": decisions,
+            "drift": drift,
+            "coverage_gaps": coverage_gaps,
+        }
+
+    # -- validate_action (Strategy 7) --------------------------------------
+
+    def validate_action(
+        self,
+        action: str,
+        rationale: str,
+    ) -> dict[str, Any]:
+        """Pre-action validation: check for vault conflicts before acting.
+
+        Searches the vault for decisions, patterns, lessons, and drift entries
+        that may conflict with or inform the proposed action. Returns either
+        a green light or a list of relevant entities the agent should review.
+
+        Args:
+            action: Description of what the agent intends to do.
+            rationale: Why the agent chose this approach.
+
+        Returns:
+            - status: 'proceed' | 'review' | 'conflict'
+            - relevant_entities: entities the agent should consider
+            - conflicts: entities that directly contradict the action
+            - supporting: entities that support the action
+            - message: human-readable summary
+        """
+        combined_query = f"{action} {rationale}"
+
+        # Search across all entity types for relevance
+        all_results = self.search(combined_query, max_results=10)
+
+        # Categorize by type
+        conflicts: list[dict[str, Any]] = []
+        supporting: list[dict[str, Any]] = []
+        informational: list[dict[str, Any]] = []
+
+        for result in all_results:
+            entity_type = result.get("type", "")
+            score = result.get("score", 0.0)
+
+            if entity_type == "decision" and score >= 2.0:
+                # High-scoring decision matches need careful review —
+                # they may constrain or conflict with the proposed action
+                conflicts.append(result)
+            elif entity_type == "lesson" and score >= 2.0:
+                # Lessons from past experience are warnings
+                conflicts.append(result)
+            elif entity_type in ("pattern", "procedure"):
+                # Existing patterns/procedures may already solve this
+                supporting.append(result)
+            elif entity_type == "drift" and score >= 1.5:
+                # Open questions signal uncertainty
+                informational.append(result)
+            elif score >= 1.5:
+                informational.append(result)
+
+        # Determine status
+        if conflicts:
+            status = "conflict"
+            message = (
+                f"Found {len(conflicts)} potentially conflicting "
+                f"decision(s)/lesson(s). Review before proceeding."
+            )
+        elif supporting or informational:
+            status = "review"
+            message = (
+                f"Found {len(supporting)} supporting and "
+                f"{len(informational)} informational entities. "
+                f"Consider reviewing for additional context."
+            )
+        else:
+            status = "proceed"
+            message = (
+                "No vault conflicts found. No existing precedent — "
+                "consider persisting the rationale as a new decision entity."
+            )
+
+        return {
+            "status": status,
+            "message": message,
+            "action": action,
+            "rationale": rationale,
+            "conflicts": conflicts,
+            "supporting": supporting,
+            "informational": informational,
         }
