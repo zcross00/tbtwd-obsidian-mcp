@@ -23,6 +23,7 @@ The vault contains refined procedures for common workflows. Query and follow the
 - **[[Error Diagnosis]]** — structured triage for compile, test, runtime, and tooling errors
 - **[[Safe Refactoring]]** — impact mapping → migration → verification gates
 - **[[Design Synchronization]]** — keeping component designs current after changes
+- **[[Knowledge Cross-Pollination]]** — enriching existing entities with information from other entities
 
 ## Living Component Design
 

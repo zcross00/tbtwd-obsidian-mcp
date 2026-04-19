@@ -52,6 +52,7 @@ The vault contains refined procedures for common workflows. Query and follow the
 | [[Error Diagnosis]] | Systematically diagnosing compile errors, test failures, runtime errors, and tooling issues |
 | [[Safe Refactoring]] | Modifying existing code without breaking dependents — impact mapping, migration paths, verification gates |
 | [[Design Synchronization]] | Keeping component designs current after implementation work |
+| [[Knowledge Cross-Pollination]] | Enriching existing entities with information from other entities — weaving in answers, context, and enhancements |
 
 These are canonical processes, not rigid scripts. Apply them intelligently based on context. Skip steps that clearly don't apply. Add steps when the situation warrants it.
 
