@@ -488,6 +488,103 @@ class BrainVault:
 
         return broken
 
+    # -- full-text search --------------------------------------------------
+
+    def search(
+        self,
+        text: str,
+        *,
+        entity_type: str | None = None,
+        tag: str | None = None,
+        max_results: int = 10,
+    ) -> list[dict[str, Any]]:
+        """Search entity titles and body text for keywords.
+
+        Splits the query into words (3+ chars) and scores each entity by
+        how many query words appear in its title and body. Title matches
+        are weighted higher than body matches.
+
+        Returns up to *max_results* entries sorted by score descending,
+        each with title, path, type, score, tags, and a context snippet.
+        """
+        if not text or not text.strip():
+            return []
+
+        # Tokenize query into significant words (3+ chars, lowercased)
+        query_words = [w.lower() for w in re.findall(r"[a-zA-Z0-9]{3,}", text)]
+        if not query_words:
+            return []
+
+        scored: list[tuple[float, dict[str, Any]]] = []
+
+        for folder_name, path in self._iter_entity_files():
+            # Apply entity_type filter early
+            if entity_type and entity_type.lower() != folder_name.lower():
+                continue
+
+            file_text = path.read_text(encoding="utf-8")
+            fm, body = _parse_frontmatter(file_text)
+
+            # Apply tag filter early
+            if tag:
+                file_tags = [t.lower() for t in fm.get("tags", [])]
+                if tag.lower() not in file_tags:
+                    continue
+
+            title = fm.get("title", path.stem)
+            title_lower = title.lower()
+            body_lower = body.lower()
+
+            # Score: title matches worth 2x, body matches worth 1x
+            score = 0.0
+            matched_words: list[str] = []
+            for word in query_words:
+                if word in title_lower:
+                    score += 2.0
+                    matched_words.append(word)
+                elif word in body_lower:
+                    score += 1.0
+                    matched_words.append(word)
+
+            if score == 0:
+                continue
+
+            # Bonus for matching multiple distinct words (breadth)
+            unique_matches = len(set(matched_words))
+            if unique_matches > 1:
+                score += 0.5 * (unique_matches - 1)
+
+            # Extract a context snippet from body around first match
+            snippet = ""
+            for word in matched_words:
+                idx = body_lower.find(word)
+                if idx >= 0:
+                    start = max(0, idx - 60)
+                    end = min(len(body), idx + len(word) + 60)
+                    raw = body[start:end].strip()
+                    # Clean up to nearest word boundaries
+                    if start > 0:
+                        raw = "..." + raw[raw.find(" ") + 1:] if " " in raw else "..." + raw
+                    if end < len(body):
+                        last_space = raw.rfind(" ")
+                        raw = raw[:last_space] + "..." if last_space > 0 else raw + "..."
+                    snippet = raw
+                    break
+
+            scored.append((score, {
+                "title": title,
+                "path": str(path.relative_to(self.root)),
+                "type": folder_name,
+                "tags": fm.get("tags", []),
+                "score": round(score, 2),
+                "matched_words": list(set(matched_words)),
+                "snippet": snippet,
+            }))
+
+        # Sort by score descending, then by title alphabetically
+        scored.sort(key=lambda x: (-x[0], x[1]["title"]))
+        return [entry for _, entry in scored[:max_results]]
+
     # -- tags.yml registry -------------------------------------------------
 
     def read_tags(self) -> dict[str, list[dict[str, str]]]:

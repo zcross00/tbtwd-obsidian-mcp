@@ -36,14 +36,16 @@ SESSION START: Always call get_brief first. It returns the active project, goals
 focus area, and backlog — your L0 orientation context.
 
 READING:
-- list_types: discover entity categories (goal, system, concept, decision, feature, drift) with counts.
+- list_types: discover entity categories (goal, system, concept, decision, feature, drift, pattern, procedure, lesson) with counts.
 - query: find entities by entity_type, status, tag, or project. Results sorted by project relevance.
+- search: find entities by keyword across titles and body text. Use when you don't know the exact tag.
 - get_context: drill into an entity by name, frontmatter ID, or GUID. Returns full content + linked synopses.
 - check_links: scan for broken [[wiki-links]].
 
 WHEN TO READ:
 - Before design decisions — check if a related decision or concept exists.
 - Before implementing — read the relevant goal and system entities.
+- When encountering a problem — search for lessons and procedures that may already cover it.
 - When the user references something that might be in the vault — look it up.
 - Follow [[wiki-links]] in entity bodies to discover related context.
 
@@ -54,6 +56,9 @@ WHEN TO WRITE:
 - Status changes: when work moves forward, update status.
 - Decisions: when a design choice is made, persist it.
 - Drift: when open questions or risks surface, flag them.
+- Lessons: when a problem is solved through debugging or experimentation, persist the insight.
+- Procedures: when a multi-step process is figured out, persist the steps for reuse.
+- Patterns: when a recurring solution is identified, persist the approach.
 - Metadata: when new relationships emerge, update tags, serves, depends-on.
 
 SYNTHESIZING NEW KNOWLEDGE:
@@ -210,6 +215,34 @@ def check_links() -> str:
     if not broken:
         return json.dumps({"status": "ok", "message": "No broken links found"})
     return json.dumps({"status": "broken_links_found", "count": len(broken), "broken": broken}, indent=2)
+
+
+@mcp.tool()
+def search(
+    text: str,
+    entity_type: str | None = None,
+    tag: str | None = None,
+    max_results: int = 10,
+) -> str:
+    """Search entity titles and body text for keywords.
+
+    Use this to find relevant knowledge when you don't know the exact tag or type.
+    Especially useful for locating lessons, procedures, and patterns related to
+    a problem you're trying to solve. Splits the query into words and scores
+    entities by how many query words appear in their title and body.
+
+    Args:
+        text: Search query — keywords or phrases to find in entity content.
+        entity_type: Optional filter by type (e.g. "lesson", "procedure", "concept").
+        tag: Optional filter by tag.
+        max_results: Maximum results to return (default 10).
+
+    Returns ranked results with title, path, type, relevance score, and a
+    context snippet showing where the match was found.
+    """
+    vault = _get_vault()
+    results = vault.search(text, entity_type=entity_type, tag=tag, max_results=max_results)
+    return json.dumps(results, indent=2, default=str)
 
 
 @mcp.tool()
