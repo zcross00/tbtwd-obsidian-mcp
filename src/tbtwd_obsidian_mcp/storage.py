@@ -110,6 +110,7 @@ class BrainVault:
             cwd=self.root,
             capture_output=True,
             text=True,
+            stdin=subprocess.DEVNULL,
             timeout=30,
         )
         log.debug("git %s finished in %.2fs (rc=%d)", args[0], time.monotonic() - t0, result.returncode)
@@ -147,46 +148,59 @@ class BrainVault:
         Push runs in a background thread so the tool response is not blocked
         by network latency.
         """
-        rel = str(path.relative_to(self.root))
+        return self._commit_and_push_batch([path], message)
+
+    def _commit_and_push_batch(self, paths: list[Path], message: str) -> dict[str, Any]:
+        """Stage multiple files, commit once, and push to main.
+
+        Batches all paths into a single git add + commit + push cycle.
+        The entire operation runs in a background thread so it never
+        blocks the tool response — on Windows, git subprocesses called
+        from a stdio-based MCP server can deadlock on pipe buffers.
+        """
         info: dict[str, Any] = {"git": "skipped"}
 
         if not self._repo_url:
             return info
 
-        # Ensure remote is configured before push
-        self._ensure_remote(self._repo_url)
-
-        # Stage
-        result = self._git("add", rel)
-        if result.returncode != 0:
-            info["git"] = "error"
-            info["git_error"] = f"git add failed: {result.stderr.strip()}"
+        if not paths:
             return info
 
-        # Commit
-        result = self._git("commit", "-m", message)
-        if result.returncode != 0:
-            combined = (result.stdout + result.stderr).lower()
-            if "nothing to commit" in combined or "nothing added to commit" in combined:
-                info["git"] = "no_changes"
-                return info
-            info["git"] = "error"
-            info["git_error"] = f"git commit failed: {result.stderr.strip() or result.stdout.strip()}"
-            return info
+        rels = [str(p.relative_to(self.root)) for p in paths]
 
-        # Push in background — don't block the tool response on network I/O
-        def _bg_push() -> None:
+        def _bg_commit_and_push() -> None:
             try:
+                # Ensure remote is configured
+                self._ensure_remote(self._repo_url)
+
+                # Stage all files
+                result = self._git("add", *rels)
+                if result.returncode != 0:
+                    log.warning("git add failed: %s", result.stderr.strip())
+                    return
+
+                # Commit
+                result = self._git("commit", "-m", message)
+                if result.returncode != 0:
+                    combined = (result.stdout + result.stderr).lower()
+                    if "nothing to commit" in combined or "nothing added to commit" in combined:
+                        log.debug("nothing to commit")
+                        return
+                    log.warning("git commit failed: %s", result.stderr.strip() or result.stdout.strip())
+                    return
+
+                # Push
                 result = self._git("push", "origin", "main")
                 if result.returncode != 0:
                     log.warning("background push failed: %s", result.stderr.strip())
                 else:
-                    log.info("background push succeeded")
+                    log.info("background push succeeded for %d files", len(rels))
             except Exception:
-                log.exception("background push error")
+                log.exception("background commit+push error")
 
-        threading.Thread(target=_bg_push, daemon=True).start()
+        threading.Thread(target=_bg_commit_and_push, daemon=True).start()
         info["git"] = "committed_push_pending"
+        info["files_staged"] = len(paths)
         return info
 
     # -- brief.yml (L0) ----------------------------------------------------
@@ -765,6 +779,7 @@ class BrainVault:
         """
         allowed_tags = self._allowed_tags()
         results: list[dict[str, Any]] = []
+        written_paths: list[Path] = []
 
         for candidate in candidates:
             disposition = candidate.get("disposition")
@@ -828,7 +843,24 @@ class BrainVault:
                     f"tag '{t}' not in controlled vocabulary — dropped"
                     for t in invalid_tags
                 ]
+
+            # Track written file paths for batch commit
+            if result.get("action") in ("created", "merged") and result.get("path"):
+                written_paths.append(self.root / result["path"])
+
             results.append(result)
+
+        # Batch commit all written files in a single git operation
+        if written_paths:
+            titles = [r.get("title", "?") for r in results if r.get("action") in ("created", "merged")]
+            message = f"synthesize {len(written_paths)} entities: {', '.join(titles[:5])}"
+            if len(titles) > 5:
+                message += f" (+{len(titles) - 5} more)"
+            git_info = self._commit_and_push_batch(written_paths, message)
+            # Attach git info to the last result for visibility
+            for r in results:
+                if r.get("action") in ("created", "merged"):
+                    r["git"] = git_info.get("git", "skipped")
 
         return results
 
@@ -891,11 +923,6 @@ class BrainVault:
 
         file_path.write_text(text, encoding="utf-8")
 
-        # Commit
-        git_info = self._commit_and_push(
-            file_path, f"synthesize new: {title}"
-        )
-
         return {
             "title": title,
             "action": "created",
@@ -903,7 +930,6 @@ class BrainVault:
             "guid": fm["guid"],
             "claims_count": len(claims),
             "warnings": warnings,
-            **git_info,
         }
 
     def _synthesize_merge(
@@ -992,9 +1018,6 @@ class BrainVault:
         path.write_text(new_text, encoding="utf-8")
 
         entity_id = fm.get("id", path.stem)
-        git_info = self._commit_and_push(
-            path, f"synthesize merge: {entity_id}"
-        )
 
         return {
             "title": fm.get("title", path.stem),
@@ -1005,5 +1028,4 @@ class BrainVault:
             "duplicate_claims": len(duplicate_claims),
             "novel_links": len(novel_links),
             "warnings": warnings,
-            **git_info,
         }
