@@ -2,49 +2,62 @@
 
 ## Vault-First Development Protocol
 
-This workspace develops and uses the **tbtwd-obsidian-mcp** server — a persistent memory vault exposed via the Model Context Protocol. The vault is the authoritative source of design decisions, concepts, patterns, lessons, and project state.
+This workspace develops and uses the **tbtwd-obsidian** server — a persistent memory vault exposed via the Model Context Protocol. The vault is the authoritative source of design decisions, concepts, patterns, procedures, lessons, and project state across all projects.
 
 **BLOCKING REQUIREMENT:** Before making any design decision, implementing any feature, or changing architecture, you MUST consult the vault. The vault contains accumulated project knowledge that supersedes assumptions.
 
 ## Session Start Protocol
 
-1. **Always call `get_brief` first.** This returns the active project, goals, focus area, and backlog. Do not skip this step.
-2. **Determine scope** — identify which systems, concepts, or decisions relate to the current task.
-3. **Query the vault** — use `search`, `query`, or `get_context` to load relevant entities before acting.
-4. **Cite vault sources** — reference entity titles (e.g., "per [[Tiered Memory Architecture]]") when your actions are informed by vault knowledge.
+1. **Always call `get_brief` first.** This returns the active project, goals, focus area, and backlog.
+2. **Query for relevant context** — use `get_relevant_context(topic)` for one-shot aggregation, or `search`/`query`/`get_context` for targeted lookups.
+3. **Load the component tree** — `query(entity_type="system", project="...")` to understand what exists in the active project.
+4. **Cite vault sources** — reference entity titles (e.g., "per [[Work Implementation]]") when your actions are informed by vault knowledge.
+
+## Procedures
+
+The vault contains refined procedures for common workflows. Query and follow these:
+- **[[Work Implementation]]** — full lifecycle from task understanding to delivery
+- **[[Work Verification]]** — compile gate → test gate → criteria verification → report
+- **[[Work Planning]]** — goals → component tree → gap analysis → work items
+- **[[Strategic Review]]** — drift detection, process improvements, phase assessment
+- **[[Error Diagnosis]]** — structured triage for compile, test, runtime, and tooling errors
+- **[[Safe Refactoring]]** — impact mapping → migration → verification gates
+- **[[Design Synchronization]]** — keeping component designs current after changes
+
+## Living Component Design
+
+Per [[Living Component Design]], every project has a component tree of `system` entities. These describe actual architecture — what code exists and how it works. Update them after implementation. Split them when they grow complex. Create new ones for new systems.
 
 ## Decision Audit Trail
 
-When making a decision or choosing an implementation approach:
-- **Search the vault first** for existing decisions, patterns, or lessons that apply.
+- **Search the vault first** for existing decisions, patterns, or lessons.
 - **Cite the vault entity** if one exists: "Per [[Decision Title]], using approach X because..."
-- **Flag gaps explicitly** if no vault precedent exists: "No vault precedent found for X — this may warrant a new decision/drift entity."
-- After significant decisions, **persist new knowledge** back to the vault using the synthesis pipeline.
+- **Flag gaps explicitly** if no vault precedent exists.
+- After significant decisions, **persist new knowledge** via the synthesis pipeline.
 
-## Knowledge Persistence
+## Knowledge Gathering (CRITICAL)
 
-When new insights, patterns, or decisions emerge during work:
-1. Call `get_extraction_schema` for the candidate format.
-2. Call `list_tags` for the controlled vocabulary.
-3. Extract candidates as atomic claims with specific titles.
-4. Call `match_concepts` to check for existing matches.
-5. Call `synthesize` to persist resolved candidates.
+The vault must grow smarter with every session. **Never skip an opportunity to capture useful knowledge.** Actively look for insights worth persisting throughout every task — not just at the end.
 
-Do not let knowledge evaporate at session end. If something was learned, persist it.
+Capture: debugging insights, architectural discoveries, process observations, user decisions, corrections to stale vault data, coding patterns observed in the codebase, anything a future session might need to know.
 
-## Architecture Awareness
+Persistence pipeline:
+1. `get_extraction_schema` for the candidate format.
+2. `list_tags` for the controlled vocabulary.
+3. Extract candidates as atomic claims.
+4. `match_concepts` to check for existing matches.
+5. `synthesize` to persist.
 
-Key vault entities to be aware of:
-- **Tiered Memory Architecture** — L0/L1/L2 loading protocol
-- **Link-Addressable Memory** — wiki-links as traversable relationships
-- **Concept Ingestion Pipeline** — extract → match → synthesize
-- **Claim-Based Concept Decomposition** — atomic, falsifiable claims as the unit of knowledge
-- **Background Push Threading** — git push runs in daemon threads to avoid blocking
+Do not let knowledge evaporate. If something was learned, persist it.
+
+## Conflict Detection (CRITICAL)
+
+When new information contradicts existing vault knowledge — from code, errors, user statements, or any source — you MUST flag it to the user immediately. Never silently accept or discard either side. The vault could be stale, or the new information could be wrong. State both sides, explain which seems more current and why, and let the user decide. After resolution, update the vault. This applies to ALL contradictions, no matter how minor.
 
 ## MCP Server Development
 
 When modifying the MCP server code (`src/tbtwd_obsidian_mcp/`):
 - The server is stateless — files are the source of truth, no shadow state
 - Tools should return scoped, minimal context to stay within token budgets
-- Search the vault for related `lesson` and `procedure` entities before debugging issues
+- Search the vault for related `lesson` and `procedure` entities before debugging
 - Check `drift` entities for known open questions before implementing uncertain features
