@@ -99,6 +99,12 @@ def vault_dir(tmp_path: Path) -> Path:
             "folder": "rule",
             "required-fields": ["title", "project", "tags", "status"],
         },
+        "findings": {
+            "description": "Batched investigation notes organized by topic.",
+            "statuses": ["collecting", "needs-synthesis", "synthesized"],
+            "folder": "findings",
+            "required-fields": ["title", "project", "status"],
+        },
     }
     (tmp_path / "types.yml").write_text(
         yaml.dump(types, default_flow_style=False), encoding="utf-8"
@@ -160,6 +166,7 @@ def vault_dir(tmp_path: Path) -> Path:
             "blocked_by": {"heading": "Blocked By"},
             "applicable_rules": {"heading": "Applicable Rules"},
             "synthesized": {"heading": "Synthesized"},
+            "entries": {"heading": "Entries"},
             "related": {"heading": "Related", "position": "last", "format": "wikilinks"},
         },
         "types": {
@@ -173,6 +180,7 @@ def vault_dir(tmp_path: Path) -> Path:
             "drift": ["preamble", "options", "blocked_by", "applicable_rules", "synthesized", "related"],
             "goal": ["preamble", "applicable_rules", "synthesized", "related"],
             "feature": ["preamble", "applicable_rules", "synthesized", "related"],
+            "findings": ["preamble", "entries"],
         },
     }
     (tmp_path / "body-schema.yml").write_text(
@@ -180,7 +188,7 @@ def vault_dir(tmp_path: Path) -> Path:
     )
 
     # Create type folders
-    for folder in ["concept", "decision", "goal", "system", "drift", "pattern", "lesson", "rule"]:
+    for folder in ["concept", "decision", "goal", "system", "drift", "pattern", "lesson", "rule", "findings"]:
         (tmp_path / folder).mkdir()
 
     # Create sample entities
@@ -1259,3 +1267,181 @@ class TestBatchedPush:
         import threading
         assert hasattr(vault, '_git_lock')
         assert isinstance(vault._git_lock, type(threading.Lock()))
+
+
+# ---------------------------------------------------------------------------
+# Findings tests
+# ---------------------------------------------------------------------------
+
+
+class TestSubmitFindings:
+    """Tests for the batched findings capture system."""
+
+    def test_create_new_findings_topic(self, vault: BrainVault, vault_dir: Path):
+        """Submitting a new topic creates a findings file."""
+        result = vault.submit_findings([
+            {"topic": "Combat Resolution", "content": "Damage is calculated after defense modifiers."},
+        ])
+        assert result["submitted"] == 1
+        assert result["results"][0]["action"] == "created"
+        assert result["results"][0]["topic"] == "Combat Resolution"
+
+        # Verify file exists and has correct structure
+        path = vault_dir / "findings" / "Combat Resolution.md"
+        assert path.exists()
+        text = path.read_text(encoding="utf-8")
+        fm, body = _parse_frontmatter(text)
+        assert fm["type"] == ["findings"]
+        assert fm["status"] == "collecting"
+        assert fm["project"] == ["TestProject"]
+        assert "## Entries" in body
+        assert "Damage is calculated after defense modifiers." in body
+
+    def test_merge_findings_same_topic(self, vault: BrainVault, vault_dir: Path):
+        """Submitting to an existing topic appends content."""
+        vault.submit_findings([
+            {"topic": "Combat Resolution", "content": "First observation."},
+        ])
+        result = vault.submit_findings([
+            {"topic": "Combat Resolution", "content": "Second observation."},
+        ])
+        assert result["results"][0]["action"] == "appended"
+
+        text = (vault_dir / "findings" / "Combat Resolution.md").read_text(encoding="utf-8")
+        assert "First observation." in text
+        assert "Second observation." in text
+        # Second should appear after first (order preserved)
+        assert text.index("First observation.") < text.index("Second observation.")
+
+    def test_multiple_topics_in_one_call(self, vault: BrainVault, vault_dir: Path):
+        """Multiple topics can be submitted in a single call."""
+        result = vault.submit_findings([
+            {"topic": "Topic A", "content": "Info about A."},
+            {"topic": "Topic B", "content": "Info about B."},
+        ])
+        assert result["submitted"] == 2
+        assert (vault_dir / "findings" / "Topic A.md").exists()
+        assert (vault_dir / "findings" / "Topic B.md").exists()
+
+    def test_empty_topic_rejected(self, vault: BrainVault):
+        """Empty topic or content is rejected."""
+        result = vault.submit_findings([
+            {"topic": "", "content": "some content"},
+        ])
+        assert result["results"][0]["action"] == "error"
+
+    def test_empty_content_rejected(self, vault: BrainVault):
+        """Empty content is rejected."""
+        result = vault.submit_findings([
+            {"topic": "Valid Topic", "content": ""},
+        ])
+        assert result["results"][0]["action"] == "error"
+
+    def test_session_id_in_header(self, vault: BrainVault, vault_dir: Path):
+        """Session ID appears in the entry header when provided."""
+        vault.submit_findings(
+            [{"topic": "Session Test", "content": "test content"}],
+            session_id="abc-123",
+        )
+        text = (vault_dir / "findings" / "Session Test.md").read_text(encoding="utf-8")
+        assert "session: abc-123" in text
+
+    def test_timestamp_in_entry_headers(self, vault: BrainVault, vault_dir: Path):
+        """Entries include timestamps for ordering."""
+        vault.submit_findings([
+            {"topic": "Time Test", "content": "first"},
+        ])
+        vault.submit_findings([
+            {"topic": "Time Test", "content": "second"},
+        ])
+        text = (vault_dir / "findings" / "Time Test.md").read_text(encoding="utf-8")
+        # Should have two ### [...] headers
+        import re
+        headers = re.findall(r"### \[.*?\]", text)
+        assert len(headers) == 2
+
+    def test_findings_creates_folder_if_missing(self, vault: BrainVault, vault_dir: Path):
+        """findings/ folder is created on first submission if it doesn't exist."""
+        import shutil
+        findings_dir = vault_dir / "findings"
+        if findings_dir.exists():
+            shutil.rmtree(findings_dir)
+        assert not findings_dir.exists()
+
+        vault.submit_findings([
+            {"topic": "Auto Create", "content": "test"},
+        ])
+        assert findings_dir.exists()
+        assert (findings_dir / "Auto Create.md").exists()
+
+    def test_needs_synthesis_flag_returned(self, vault: BrainVault, vault_dir: Path):
+        """needsSynthesis flag is present in submit_findings result."""
+        result = vault.submit_findings([
+            {"topic": "Small Topic", "content": "tiny"},
+        ])
+        assert "needsSynthesis" in result
+        # Small content shouldn't trigger synthesis
+        assert result["needsSynthesis"] is False
+
+
+class TestFindingsStatus:
+    """Tests for get_findings_status."""
+
+    def test_empty_findings(self, vault: BrainVault):
+        """Status returns empty state when no findings exist."""
+        result = vault.get_findings_status()
+        assert result["topic_count"] == 0
+        assert result["total_size"] == 0
+        assert result["needsSynthesis"] is False
+
+    def test_status_after_submissions(self, vault: BrainVault, vault_dir: Path):
+        """Status reflects submitted findings."""
+        vault.submit_findings([
+            {"topic": "Topic A", "content": "Some findings about A."},
+            {"topic": "Topic B", "content": "Some findings about B."},
+        ])
+        result = vault.get_findings_status()
+        assert result["topic_count"] == 2
+        assert result["total_size"] > 0
+        assert result["threshold"] == vault._FINDINGS_SYNTHESIS_THRESHOLD
+
+    def test_needs_synthesis_threshold(self, vault: BrainVault, vault_dir: Path):
+        """needsSynthesis triggers when total size exceeds threshold."""
+        # Submit enough content to exceed the threshold
+        big_content = "x" * (vault._FINDINGS_SYNTHESIS_THRESHOLD + 1000)
+        vault.submit_findings([
+            {"topic": "Big Topic", "content": big_content},
+        ])
+        result = vault.get_findings_status()
+        assert result["needsSynthesis"] is True
+
+
+class TestFindingsSearchWeighting:
+    """Tests for findings search weighting at 65% of established entities."""
+
+    def test_findings_weighted_lower_than_established(self, vault: BrainVault, vault_dir: Path):
+        """Findings score lower than equivalent established entities."""
+        # Create a findings file with the same keyword as an established concept
+        vault.submit_findings([
+            {"topic": "Token Search Test", "content": "Token efficiency is important for optimization. L0 bootstrap costs ~300 tokens."},
+        ])
+        # Search for "token efficiency"
+        results = vault.search("token efficiency")
+        # The established concept "Token Efficiency" should rank higher
+        assert len(results) >= 2
+        # Find the concept and findings results
+        concept_result = next((r for r in results if r["type"] == "concept"), None)
+        findings_result = next((r for r in results if r["type"] == "findings"), None)
+        assert concept_result is not None
+        assert findings_result is not None
+        assert concept_result["score"] > findings_result["score"]
+        assert findings_result.get("weighted") is True
+
+    def test_findings_still_searchable(self, vault: BrainVault, vault_dir: Path):
+        """Findings appear in search results even with lower weight."""
+        vault.submit_findings([
+            {"topic": "Unique Findings Topic", "content": "Completely unique findings content xyzzyplugh."},
+        ])
+        results = vault.search("xyzzyplugh")
+        assert len(results) >= 1
+        assert results[0]["type"] == "findings"

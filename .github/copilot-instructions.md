@@ -65,14 +65,26 @@ The vault must grow smarter with every session — this is a direct measure of h
 
 Capture: debugging insights, architectural discoveries, process observations, user decisions, corrections to stale vault data, coding patterns observed in the codebase, efficiency shortcuts, cross-domain techniques, anti-patterns that waste time, anything a future session might need to know.
 
-Persistence pipeline:
-1. `get_extraction_schema` for the candidate format.
-2. `list_tags` for the controlled vocabulary.
-3. Extract candidates as atomic claims.
-4. `match_concepts` to check for existing matches.
-5. `synthesize` to persist.
+### Findings Workflow
 
-Do not let knowledge evaporate. If something was learned, persist it. A session that produces no new knowledge is a session that failed to improve.
+After every significant step, submit what you learned via `submit_findings`. Group observations by topic — each topic gets its own findings file. **Only submit NEW information learned during the step** — do not re-submit information that originated from existing vault entities.
+
+```
+submit_findings(topics=[
+    {"topic": "Combat Resolution", "content": "Damage is calculated after defense modifiers are applied..."},
+    {"topic": "NPC Decision Making", "content": "NPCs evaluate available actions based on urgency..."},
+])
+```
+
+When any tool response includes `needsSynthesis: true`, execute the synthesis procedure at the first opportunity:
+
+1. Call `get_findings_status` to see what has accumulated.
+2. Process findings oldest-first, topic by topic.
+3. For each topic, determine what vault entities should be created or updated.
+4. Use `get_extraction_schema` → `list_tags` → `match_concepts` → `synthesize` for each resulting entity.
+5. After synthesis, archive the processed findings files via `archive_entity`.
+
+Do not let knowledge evaporate. If something was learned, submit it as a finding. A session that produces no findings is a session that failed to observe.
 
 ## Conflict Detection (CRITICAL)
 
@@ -90,7 +102,7 @@ When modifying the MCP server code (`src/tbtwd_obsidian_mcp/`):
 
 ## Vault Access Rule
 
-Per [[Vault Access Via MCP Only]]: **never interact with vault files directly.** All reads go through MCP tools (`get_context`, `query`, `search`, etc.). All writes go through MCP tools (`update_memory`, `update_body`, `synthesize`, `archive_entity`). If the MCP server can't do what you need, enhance the server first, then use the new tool. Direct file manipulation bypasses validation, schema enforcement, and git management.
+Per [[Vault Access Via MCP Only]]: **never interact with vault files directly.** All reads go through MCP tools (`get_context`, `query`, `search`, etc.). All writes go through MCP tools (`update_memory`, `update_body`, `synthesize`, `submit_findings`, `archive_entity`). If the MCP server can't do what you need, enhance the server first, then use the new tool. Direct file manipulation bypasses validation, schema enforcement, and git management.
 
 ## Rule Enforcement (CRITICAL)
 

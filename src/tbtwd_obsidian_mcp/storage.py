@@ -1037,6 +1037,12 @@ class BrainVault:
             }
             if ".trash" in path.parts:
                 result_entry["archived"] = True
+            # Findings are unvetted working memory — weight lower than
+            # established entities so vetted knowledge ranks first.
+            if folder_name == "findings":
+                score *= 0.65
+                result_entry["score"] = round(score, 2)
+                result_entry["weighted"] = True
             scored.append((score, result_entry))
 
         # Sort by score descending, then by title alphabetically
@@ -1729,4 +1735,221 @@ class BrainVault:
             "applicable_rules": applicable_rules,
             "supporting": supporting,
             "informational": informational,
+        }
+
+    # -- findings ----------------------------------------------------------
+
+    # Threshold in characters across all findings files before needsSynthesis
+    _FINDINGS_SYNTHESIS_THRESHOLD = 8000
+
+    def submit_findings(
+        self,
+        topics: list[dict[str, Any]],
+        *,
+        project: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Submit investigation findings grouped by topic.
+
+        Each topic is a dict with:
+            - topic (str): the topic name (used as filename)
+            - content (str): unstructured findings text — new observations
+
+        If a findings file for the topic already exists, the new content is
+        appended (with a timestamp separator) preserving discovery order.
+        If no file exists, a new findings entity is created.
+
+        Args:
+            topics: List of {topic, content} dicts.
+            project: Project name (defaults to active-project).
+            session_id: Optional session identifier for provenance tracking.
+
+        Returns summary with per-topic actions and needsSynthesis flag.
+        """
+        proj = project or self._active_project()
+        findings_dir = self.root / "findings"
+        findings_dir.mkdir(exist_ok=True)
+
+        results: list[dict[str, Any]] = []
+        written_paths: list[Path] = []
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
+
+        for entry in topics:
+            topic_name = entry.get("topic", "").strip()
+            content = entry.get("content", "").strip()
+
+            if not topic_name or not content:
+                results.append({
+                    "topic": topic_name or "(empty)",
+                    "action": "error",
+                    "reason": "topic and content are both required",
+                })
+                continue
+
+            file_path = findings_dir / f"{topic_name}.md"
+
+            if file_path.exists():
+                result = self._merge_findings(
+                    file_path, content, timestamp, session_id
+                )
+            else:
+                result = self._create_findings(
+                    file_path,
+                    topic_name=topic_name,
+                    content=content,
+                    project=proj,
+                    timestamp=timestamp,
+                    session_id=session_id,
+                )
+
+            results.append(result)
+            if result.get("action") in ("created", "appended"):
+                written_paths.append(file_path)
+
+        # Batch commit
+        if written_paths:
+            topic_names = [r.get("topic", "?") for r in results
+                           if r.get("action") in ("created", "appended")]
+            message = f"findings: {', '.join(topic_names[:5])}"
+            if len(topic_names) > 5:
+                message += f" (+{len(topic_names) - 5} more)"
+            git_info = self._commit_and_push_batch(written_paths, message)
+        else:
+            git_info = {"git": "skipped"}
+
+        needs = self._needs_synthesis()
+
+        return {
+            "submitted": len([r for r in results if r["action"] in ("created", "appended")]),
+            "results": results,
+            "needsSynthesis": needs,
+            **git_info,
+        }
+
+    def _create_findings(
+        self,
+        file_path: Path,
+        *,
+        topic_name: str,
+        content: str,
+        project: str | None,
+        timestamp: str,
+        session_id: str | None,
+    ) -> dict[str, Any]:
+        """Create a new findings file for a topic."""
+        fm: dict[str, Any] = {
+            "title": topic_name,
+            "guid": str(uuid.uuid4()),
+            "type": ["findings"],
+            "status": "collecting",
+        }
+        if project:
+            fm["project"] = [project]
+
+        header = f"[{timestamp}]"
+        if session_id:
+            header += f" (session: {session_id})"
+
+        body_lines = [
+            f"# {topic_name}",
+            "",
+            "## Entries",
+            "",
+            f"### {header}",
+            "",
+            content,
+            "",
+        ]
+        body = "\n".join(body_lines)
+        text = _serialize_frontmatter(fm, body)
+        file_path.write_text(text, encoding="utf-8")
+
+        return {
+            "topic": topic_name,
+            "action": "created",
+            "path": str(file_path.relative_to(self.root)),
+            "guid": fm["guid"],
+        }
+
+    def _merge_findings(
+        self,
+        file_path: Path,
+        content: str,
+        timestamp: str,
+        session_id: str | None,
+    ) -> dict[str, Any]:
+        """Append new findings to an existing findings file."""
+        text = file_path.read_text(encoding="utf-8")
+        fm, body = _parse_frontmatter(text)
+
+        header = f"[{timestamp}]"
+        if session_id:
+            header += f" (session: {session_id})"
+
+        # Append new entry at end of body (preserving order)
+        new_entry = f"\n### {header}\n\n{content}\n"
+        body = body.rstrip() + "\n" + new_entry
+
+        new_text = _serialize_frontmatter(fm, body)
+        file_path.write_text(new_text, encoding="utf-8")
+
+        return {
+            "topic": fm.get("title", file_path.stem),
+            "action": "appended",
+            "path": str(file_path.relative_to(self.root)),
+            "entry_count": body.count("### ["),
+        }
+
+    def _findings_total_size(self) -> int:
+        """Return total character count across all active findings files."""
+        findings_dir = self.root / "findings"
+        if not findings_dir.is_dir():
+            return 0
+        total = 0
+        for p in findings_dir.iterdir():
+            if p.is_file() and p.suffix == ".md":
+                text = p.read_text(encoding="utf-8")
+                fm, _ = _parse_frontmatter(text)
+                if fm.get("status") != "synthesized":
+                    total += p.stat().st_size
+        return total
+
+    def _needs_synthesis(self) -> bool:
+        """Return True if accumulated findings exceed the synthesis threshold."""
+        return self._findings_total_size() >= self._FINDINGS_SYNTHESIS_THRESHOLD
+
+    def get_findings_status(self) -> dict[str, Any]:
+        """Return a summary of current findings state.
+
+        Includes per-topic file sizes, total size, threshold,
+        and whether synthesis is needed.
+        """
+        findings_dir = self.root / "findings"
+        topics: list[dict[str, Any]] = []
+        total_size = 0
+
+        if findings_dir.is_dir():
+            for p in sorted(findings_dir.iterdir()):
+                if p.is_file() and p.suffix == ".md":
+                    text = p.read_text(encoding="utf-8")
+                    fm, body = _parse_frontmatter(text)
+                    status = fm.get("status", "collecting")
+                    size = len(text)
+                    entry_count = body.count("### [")
+                    topics.append({
+                        "topic": fm.get("title", p.stem),
+                        "path": str(p.relative_to(self.root)),
+                        "status": status,
+                        "size": size,
+                        "entry_count": entry_count,
+                    })
+                    if status != "synthesized":
+                        total_size += size
+
+        return {
+            "topics": topics,
+            "topic_count": len(topics),
+            "total_size": total_size,
+            "threshold": self._FINDINGS_SYNTHESIS_THRESHOLD,
+            "needsSynthesis": total_size >= self._FINDINGS_SYNTHESIS_THRESHOLD,
         }

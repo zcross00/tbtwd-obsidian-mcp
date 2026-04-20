@@ -73,6 +73,16 @@ WRITING:
 sections or inserts new ones. Auto-validates links, commits, and pushes.
 - archive_entity: move an entity to .trash/ preserving type folder structure. Archived entities \
 are excluded from all retrieval by default. Reports incoming links that will break.
+- submit_findings: submit investigation findings grouped by topic. Call after every step \
+to capture new observations. Findings accumulate until needsSynthesis=true signals synthesis.
+- get_findings_status: check accumulated findings size and whether synthesis is needed.
+
+FINDINGS WORKFLOW:
+After every significant step, submit what you learned as findings via submit_findings. \
+Group observations by topic — each topic gets its own findings file. Only submit NEW \
+information learned during the step — do not re-submit information from existing vault entities. \
+When any tool response includes needsSynthesis=true, execute the synthesis procedure at the \
+first opportunity. This replaces the old extract→match→synthesize pipeline for capturing knowledge.
 
 QUERYING ARCHIVED ENTITIES:
 - query, search, and get_context accept an optional include_archived=True parameter.
@@ -92,14 +102,13 @@ WHEN TO WRITE:
 into rules — archive it. When a drift is resolved. When an entity is fully superseded.
 
 SYNTHESIZING NEW KNOWLEDGE:
-When new concepts, decisions, or patterns emerge from conversation or work:
-1. Call get_extraction_schema to get the candidate format and rules.
-2. Call list_tags to get the controlled tag vocabulary.
-3. Extract candidates following the schema — atomic claims, specific titles, valid tags.
-4. Call match_concepts with candidates to check for existing matches.
-5. For 'ambiguous' matches: call get_context on the matched entity, then decide new vs merge.
-6. Call synthesize with resolved candidates to persist them.
-This pipeline ensures consistent, deterministic knowledge capture regardless of input source.
+After every step, submit findings via submit_findings grouped by topic.
+When needsSynthesis=true appears in any tool response, synthesize at the first opportunity:
+1. Call get_findings_status to see what has accumulated.
+2. Process findings oldest-first, topic by topic.
+3. For each topic, determine what vault entities should be created or updated.
+4. Use the extract→match→synthesize pipeline for each resulting entity.
+5. After synthesis, archive the processed findings files.
 
 RULES:
 - Don't fabricate entity content — read first, update what exists.
@@ -112,10 +121,11 @@ RULES:
 - Don't let knowledge evaporate — if something was learned, persist it.
 
 ENTITY STRUCTURE: Entities live in type folders (concept/, decision/, drift/, feature/, \
-goal/, lesson/, pattern/, procedure/, rule/, system/). Each is a markdown file with YAML \
+goal/, lesson/, pattern/, procedure/, rule/, system/, findings/). Each is a markdown file with YAML \
 frontmatter (guid, id, title, status, type, project, tags, serves, depends-on) and a \
 markdown body with [[wiki-links]]. Rule entities are enforceable constraints — violations \
-are errors, not missed optimizations.\
+are errors, not missed optimizations. Findings entities are unstructured investigation \
+notes that accumulate until synthesis.\
 """,
 )
 
@@ -486,6 +496,106 @@ def validate_action(action: str, rationale: str) -> str:
     return json.dumps(result, indent=2, default=str)
 
 
+@mcp.tool()
+def submit_findings(
+    topics: list[dict],
+    project: str | None = None,
+    session_id: str | None = None,
+) -> str:
+    """Submit investigation findings grouped by topic.
+
+    Call this after every significant step to capture what you learned.
+    Each topic should contain ALL new observations about that subject —
+    do NOT include information that originated from existing vault entities.
+
+    If a topic already has a findings file, new content is appended with
+    a timestamp, preserving discovery order. Findings accumulate until
+    the server signals needsSynthesis=true, at which point you should
+    run the synthesis procedure at the first opportunity.
+
+    Args:
+        topics: List of finding entries. Each is a dict with:
+            - topic (str): topic name (becomes the filename)
+            - content (str): unstructured findings — everything learned
+              about this topic during this step
+        project: Override project (defaults to active-project).
+        session_id: Optional session identifier for provenance.
+
+    Returns per-topic results and needsSynthesis flag.
+    """
+    vault = _get_vault()
+    result = vault.submit_findings(
+        topics, project=project, session_id=session_id
+    )
+    return json.dumps(result, indent=2, default=str)
+
+
+@mcp.tool()
+def get_findings_status() -> str:
+    """Return the current state of accumulated findings.
+
+    Shows per-topic file sizes, entry counts, total accumulated size,
+    the synthesis threshold, and whether synthesis is needed.
+    Use this to check if findings should be synthesized.
+    """
+    vault = _get_vault()
+    result = vault.get_findings_status()
+    return json.dumps(result, indent=2, default=str)
+
+
+# ---------------------------------------------------------------------------
+# needsSynthesis flag injection
+# ---------------------------------------------------------------------------
+
+# Wrap all tool responses to include needsSynthesis when findings exist.
+# This is done by monkey-patching the tool functions after registration.
+
+_TOOLS_EXEMPT_FROM_FLAG = {"submit_findings", "get_findings_status"}
+
+_original_tool_fns: dict[str, Any] = {}
+
+
+def _wrap_tool_with_findings_flag(tool_name: str, original_fn: Any) -> Any:
+    """Wrap a tool function to inject needsSynthesis into its JSON response."""
+    import functools
+
+    @functools.wraps(original_fn)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        result = original_fn(*args, **kwargs)
+        if isinstance(result, str):
+            try:
+                vault = _get_vault()
+                needs = vault._needs_synthesis()
+                if needs:
+                    data = json.loads(result)
+                    if isinstance(data, dict):
+                        data["needsSynthesis"] = True
+                        return json.dumps(data, indent=2, default=str)
+                    # For list results, wrap in envelope
+                    return json.dumps(
+                        {"results": data, "needsSynthesis": True},
+                        indent=2, default=str,
+                    )
+            except Exception:
+                pass  # Don't break tools if flag injection fails
+        return result
+
+    return wrapper
+
+
+def _install_findings_flags() -> None:
+    """Install needsSynthesis wrappers on all registered tools."""
+    for tool_name, tool_obj in list(mcp._tool_manager._tools.items()):
+        if tool_name in _TOOLS_EXEMPT_FROM_FLAG:
+            continue
+        original_fn = tool_obj.fn
+        tool_obj.fn = _wrap_tool_with_findings_flag(tool_name, original_fn)
+
+
+# Defer installation until after all tools are registered
+import atexit as _atexit  # noqa: E402
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -493,6 +603,7 @@ def validate_action(action: str, rationale: str) -> str:
 
 def main() -> None:
     """Run the MCP server via stdio transport."""
+    _install_findings_flags()
     log.info("Server starting, transport=stdio")
     mcp.run(transport="stdio")
     log.info("Server exited")
