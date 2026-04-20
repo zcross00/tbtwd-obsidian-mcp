@@ -2,7 +2,7 @@
 
 ## Vault-First Development Protocol
 
-This workspace develops and uses the **tbtwd-obsidian** server — a persistent memory vault exposed via the Model Context Protocol. The vault is the authoritative source of design decisions, concepts, patterns, procedures, lessons, and project state across all projects.
+This workspace develops and uses the **tbtwd-obsidian** server — a persistent memory vault exposed via the Model Context Protocol. The vault is the authoritative source of concepts, systems, goals, templates, rules, procedures, lessons, and project state across all projects.
 
 **BLOCKING REQUIREMENT:** Before making any design decision, implementing any feature, or changing architecture, you MUST consult the vault. The vault contains accumulated project knowledge that supersedes assumptions.
 
@@ -37,7 +37,7 @@ The vault contains refined procedures for common workflows. **Before acting on a
 - **[[Safe Refactoring]]** — *triggers: refactor, rename, restructure, move, migrate* — impact mapping → migration → verification gates
 - **[[Design Synchronization]]** — *triggers: update design, sync design, architecture changed* — keeping component designs current after changes
 - **[[Knowledge Cross-Pollination]]** — *triggers: enrich, cross-reference, connect, link entities* — enriching existing entities with information from other entities
-- **[[Decision Management]]** — *triggers: decide, choose, trade-off, alternative, which approach* — recognizing, creating, surfacing, resolving, and reversing decision entities
+- **[[Decision Management]]** — *triggers: decide, choose, trade-off, alternative, which approach* — recognizing, creating, surfacing, resolving, and reversing decisions (managed in Jira, codified in vault)
 - **[[Knowledge Curation]]** — *triggers: audit, curate, validate, check tags, maintenance, stale* — periodic vault audit: schema validation, tag coverage, status lifecycle, relationship integrity
 - **[[Session Recovery]]** — *triggers: compact, resume, recover, handoff, continue, lost context* — re-establishing full context after compaction or session handoff
 
@@ -53,9 +53,9 @@ Per [[Living Component Design]], every project has a component tree of `system` 
 
 Follow [[Decision Management]] for the full lifecycle. Key points:
 
-- **Search the vault first** for existing decisions, patterns, or lessons.
+- **Search the vault first** for existing rules, concepts, or lessons.
 - **Never silently make a decision** — surface choices, alternatives, and recommendations to the user.
-- **Cite the vault entity** if one exists: "Per [[Decision Title]], using approach X because..."
+- **Cite the vault entity** if one exists: "Per [[Rule Title]], using approach X because..."
 - **Flag gaps explicitly** if no vault precedent exists.
 - After significant decisions, **persist new knowledge** via the synthesis pipeline.
 
@@ -63,7 +63,7 @@ Follow [[Decision Management]] for the full lifecycle. Key points:
 
 The vault must grow smarter with every session — this is a direct measure of how much you're learning. **Never skip an opportunity to capture useful knowledge.** Aggressively look for insights worth persisting throughout every task — not just at the end. Every insight persisted makes every future session faster and sharper.
 
-Capture: debugging insights, architectural discoveries, process observations, user decisions, corrections to stale vault data, coding patterns observed in the codebase, efficiency shortcuts, cross-domain techniques, anti-patterns that waste time, anything a future session might need to know.
+Capture: debugging insights, architectural discoveries, process observations, user decisions, corrections to stale vault data, coding conventions observed in the codebase, efficiency shortcuts, cross-domain techniques, anti-patterns that waste time, anything a future session might need to know.
 
 ### Findings Workflow
 
@@ -98,7 +98,7 @@ When modifying the MCP server code (`src/tbtwd_obsidian_mcp/`):
 - The server is stateless — files are the source of truth, no shadow state
 - Tools should return scoped, minimal context to stay within token budgets
 - Search the vault for related `lesson` and `procedure` entities before debugging
-- Check `drift` entities for known open questions before implementing uncertain features
+- Check Jira drift items for known open questions before implementing uncertain features
 
 ## Vault Access Rule
 

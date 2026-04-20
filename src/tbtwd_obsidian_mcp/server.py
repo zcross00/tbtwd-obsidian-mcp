@@ -37,16 +37,16 @@ focus area, backlog, AND suggested next tool calls — your L0 orientation conte
 Follow the next_steps list to load relevant context before acting.
 
 READING:
-- list_types: discover entity categories (goal, system, concept, decision, feature, drift, pattern, procedure, lesson) with counts.
+- list_types: discover entity categories (project, concept, goal, system, template, procedure, lesson, rule) with counts.
 - query: find entities by entity_type, status, tag, or project. Results sorted by project relevance.
 - search: find entities by keyword across titles and body text. Use when you don't know the exact tag.
 - get_context: drill into an entity by name, frontmatter ID, or GUID. Returns full content + linked synopses.
-- get_relevant_context: ONE-CALL aggregation — pass a topic and get all relevant entities, decisions, drift, \
+- get_relevant_context: ONE-CALL aggregation — pass a topic and get all relevant entities \
 and coverage gaps in a single response. Use this instead of separate search → get_context chains.
 - check_links: scan for broken [[wiki-links]].
 
 WHEN TO READ:
-- Before design decisions — check if a related decision or concept exists.
+- Before design choices — check if a related concept or rule exists.
 - Before implementing — read the relevant goal and system entities.
 - When encountering a problem — search for lessons and procedures that may already cover it.
 - When the user references something that might be in the vault — look it up.
@@ -54,24 +54,24 @@ WHEN TO READ:
 
 PRE-ACTION VALIDATION:
 - validate_action: CALL THIS before implementing significant changes. Pass your intended \
-action and rationale. The tool checks for conflicting decisions, relevant lessons, \
-applicable rules, and existing patterns. Returns 'proceed', 'review', or 'conflict'.
+action and rationale. The tool checks for conflicting lessons, relevant rules, \
+applicable concepts, and existing procedures. Returns 'proceed', 'review', or 'conflict'.
 - If status is 'conflict': STOP and review the conflicting entities before proceeding.
 - If status is 'review': read the supporting entities and applicable rules for additional context.
 - If status is 'proceed': safe to continue, but consider persisting your rationale.
 - The 'applicable_rules' field lists enforceable constraints. Rules are NOT suggestions — \
 they are hard requirements that MUST be satisfied. Violations are errors.
 
-DECISION AUDIT TRAIL:
-- ALWAYS cite vault entities when they inform your decisions: "Per [[Entity Title]], using approach X."
+AUDIT TRAIL:
+- ALWAYS cite vault entities when they inform your choices: "Per [[Entity Title]], using approach X."
 - If no vault precedent exists, EXPLICITLY state: "No vault precedent found for X."
-- After significant decisions, persist the rationale using the synthesis pipeline.
+- After significant choices, persist the rationale using the synthesis pipeline.
 
 WRITING:
 - update_memory: update an entity's YAML frontmatter. Auto-validates links, commits, and pushes to GitHub.
 - update_body: update or create a named section in an entity's markdown body. Replaces existing \
 sections or inserts new ones. Auto-validates links, commits, and pushes.
-- archive_entity: move an entity to .trash/ preserving type folder structure. Archived entities \
+- archive_entity: move an entity to .trash/ preserving directory structure. Archived entities \
 are excluded from all retrieval by default. Reports incoming links that will break.
 - submit_findings: submit investigation findings grouped by topic. Call after every step \
 to capture new observations. Findings accumulate until needsSynthesis=true signals synthesis.
@@ -87,19 +87,16 @@ first opportunity. This replaces the old extract→match→synthesize pipeline f
 QUERYING ARCHIVED ENTITIES:
 - query, search, and get_context accept an optional include_archived=True parameter.
 - Default is False — archived entities are invisible unless explicitly requested.
-- Use include_archived=True only when you need details of a previously archived entity \
-(e.g. reviewing an old decision's rationale).
+- Use include_archived=True only when you need details of a previously archived entity.
 
 WHEN TO WRITE:
 - Status changes: when work moves forward, update status.
-- Decisions: when a design choice is made, persist it.
-- Drift: when open questions or risks surface, flag them.
 - Lessons: when a problem is solved through debugging or experimentation, persist the insight.
 - Procedures: when a multi-step process is figured out, persist the steps for reuse.
-- Patterns: when a recurring solution is identified, persist the approach.
+- Templates: when a reusable structural scaffold is identified, persist it.
+- Concepts: when a principle or domain idea emerges, persist it.
 - Metadata: when new relationships emerge, update tags, serves, depends-on.
-- Archival: when a decision has been accepted, implemented, and its constraints extracted \
-into rules — archive it. When a drift is resolved. When an entity is fully superseded.
+- Archival: when an entity is fully superseded or no longer relevant.
 
 SYNTHESIZING NEW KNOWLEDGE:
 After every step, submit findings via submit_findings grouped by topic.
@@ -120,12 +117,13 @@ RULES:
 - Don't synthesize without matching first — always preview with match_concepts.
 - Don't let knowledge evaporate — if something was learned, persist it.
 
-ENTITY STRUCTURE: Entities live in type folders (concept/, decision/, drift/, feature/, \
-goal/, lesson/, pattern/, procedure/, rule/, system/, findings/). Each is a markdown file with YAML \
-frontmatter (guid, id, title, status, type, project, tags, serves, depends-on) and a \
-markdown body with [[wiki-links]]. Rule entities are enforceable constraints — violations \
-are errors, not missed optimizations. Findings entities are unstructured investigation \
-notes that accumulate until synthesis.\
+DIRECTORY STRUCTURE: Project-scoped entities live under {project_dir}/{type}/ \
+(e.g. sovereign/concept/, tbtwd/system/). Root-scoped entities (procedure, rule, \
+lesson, findings) live at vault root. Project entities live at {project_dir}/Name.md. \
+Each entity is a markdown file with YAML frontmatter (guid, title, status, type, \
+project, tags, serves, depends-on) and a markdown body with [[wiki-links]]. \
+Rule entities are enforceable constraints — violations are errors. \
+Findings entities are unstructured investigation notes that accumulate until synthesis.\
 """,
 )
 
@@ -223,7 +221,7 @@ def query(
         tag: Filter by tag (e.g. "combat", "core-gameplay").
         goal: Filter by linked goal (e.g. "G-2").
         status: Filter by status (e.g. "In Progress", "concept").
-        entity_type: Filter by type folder (e.g. "system", "goal", "decision", "concept", "feature", "drift").
+        entity_type: Filter by type (e.g. "system", "goal", "concept", "template", "lesson", "rule").
         project: Override the active project for relevance sorting. Defaults to active-project from brief.yml.
         include_archived: When True, also includes entities archived to .trash/.
             Default False — use only when you need to find old/retired entities.
@@ -340,7 +338,7 @@ def search(
     """Search entity titles and body text for keywords.
 
     Use this to find relevant knowledge when you don't know the exact tag or type.
-    Especially useful for locating lessons, procedures, and patterns related to
+    Especially useful for locating lessons, procedures, and concepts related to
     a problem you're trying to solve. Splits the query into words and scores
     entities by how many query words appear in their title and body.
 
@@ -448,9 +446,9 @@ def get_relevant_context(
     """Single-call aggregation: get all vault context relevant to a topic.
 
     Combines search + query + context loading into one tool call, returning
-    the most relevant entities, their linked synopses, related decisions,
-    open drift items, and any coverage gaps. Use this instead of separate
-    search → get_context chains to reduce tool call overhead.
+    the most relevant entities, their linked synopses, and any coverage gaps.
+    Use this instead of separate search → get_context chains to reduce tool
+    call overhead.
 
     Args:
         topic: Natural-language description of what you're working on or
@@ -458,10 +456,10 @@ def get_relevant_context(
             better than "combat".
         max_entities: Maximum number of full entities to return (default 5).
         include_types: Optional list of entity types to prioritize
-            (e.g. ["decision", "lesson", "pattern"]).
+            (e.g. ["concept", "lesson", "rule"]).
 
-    Returns entities with full content, linked synopses, applicable decisions,
-    open drift items, and any aspects of the topic with no vault coverage.
+    Returns entities with full content, linked synopses, and any aspects
+    of the topic with no vault coverage.
     """
     vault = _get_vault()
     results = vault.get_relevant_context(
@@ -475,14 +473,14 @@ def validate_action(action: str, rationale: str) -> str:
     """Pre-action validation: check the vault for conflicts and rules before acting.
 
     Call this before implementing significant changes. Searches the vault
-    for decisions, patterns, lessons, rules, and drift entries that may
-    conflict with or inform your proposed action. Also loads all active
-    rules and surfaces those relevant to the action.
+    for lessons, rules, concepts, and procedures that may conflict with or
+    inform your proposed action. Also loads all active rules and surfaces
+    those relevant to the action.
 
     Returns one of three statuses:
     - 'proceed': no conflicts or relevant rules found
     - 'review': found applicable rules, supporting, or informational entities
-    - 'conflict': found decisions or lessons that may contradict your plan
+    - 'conflict': found lessons that may contradict your plan
 
     The 'applicable_rules' field contains enforceable constraints that MUST
     be satisfied. Rules are not suggestions — they are hard requirements.

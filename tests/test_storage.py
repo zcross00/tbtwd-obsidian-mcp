@@ -28,13 +28,19 @@ from tbtwd_obsidian_mcp.storage import (
 
 @pytest.fixture
 def vault_dir(tmp_path: Path) -> Path:
-    """Create a minimal vault structure for testing."""
+    """Create a minimal vault structure for testing.
+
+    Uses project-based directory layout:
+    - testproject/ — project-scoped entities (concept, goal, system)
+    - lesson/, rule/, findings/ — root-scoped entities
+    """
     # brief.yml
     brief = {
         "active-project": "TestProject",
         "projects": {
             "TestProject": {
                 "name": "Test Project",
+                "dir": "testproject",
                 "summary": "A test project for unit tests.",
                 "stack": ["Python"],
                 "goals": {
@@ -51,58 +57,67 @@ def vault_dir(tmp_path: Path) -> Path:
 
     # types.yml
     types = {
+        "project": {
+            "description": "Top-level project container.",
+            "statuses": ["active", "archived"],
+            "folder": None,
+            "scope": "project",
+            "required-fields": ["title", "project", "tags", "status"],
+        },
         "concept": {
             "description": "Ideas and theories.",
             "statuses": ["draft", "active", "superseded"],
             "folder": "concept",
-            "required-fields": ["title", "project", "tags", "status"],
-        },
-        "decision": {
-            "description": "Resolved choices.",
-            "statuses": ["proposed", "active", "reversed"],
-            "folder": "decision",
+            "scope": "project",
             "required-fields": ["title", "project", "tags", "status"],
         },
         "goal": {
             "description": "Desired outcomes.",
             "statuses": ["active", "achieved", "dropped"],
             "folder": "goal",
+            "scope": "project",
             "required-fields": ["title", "project", "tags", "status"],
         },
         "system": {
             "description": "Running components.",
             "statuses": ["draft", "active", "superseded"],
             "folder": "system",
+            "scope": "project",
             "required-fields": ["title", "project", "tags", "status"],
         },
-        "drift": {
-            "description": "Open questions.",
-            "statuses": ["open", "resolved", "deferred"],
-            "folder": "drift",
-            "required-fields": ["title", "project", "tags", "status"],
-        },
-        "pattern": {
-            "description": "Recurring solutions.",
+        "template": {
+            "description": "Reusable structural scaffolding.",
             "statuses": ["draft", "documented", "superseded"],
-            "folder": "pattern",
+            "folder": "template",
+            "scope": "project",
             "required-fields": ["title", "project", "tags", "status"],
         },
         "lesson": {
             "description": "Experience-derived insights.",
             "statuses": ["draft", "documented"],
             "folder": "lesson",
+            "scope": "root",
             "required-fields": ["title", "project", "tags", "status"],
         },
         "rule": {
             "description": "Enforceable constraints and standards.",
             "statuses": ["draft", "active", "superseded"],
             "folder": "rule",
+            "scope": "root",
+            "required-fields": ["title", "project", "tags", "status"],
+        },
+        "procedure": {
+            "description": "Step-by-step workflows.",
+            "statuses": ["draft", "documented", "superseded"],
+            "folder": "procedure",
+            "scope": "root",
             "required-fields": ["title", "project", "tags", "status"],
         },
         "findings": {
             "description": "Batched investigation notes organized by topic.",
             "statuses": ["collecting", "needs-synthesis", "synthesized"],
             "folder": "findings",
+            "scope": "root",
             "required-fields": ["title", "project", "status"],
         },
     }
@@ -148,38 +163,31 @@ def vault_dir(tmp_path: Path) -> Path:
             "preamble": {"position": "first"},
             "mechanism": {"heading": "Mechanism"},
             "implications": {"heading": "Implications"},
-            "decision": {"heading": "Decision"},
-            "rationale": {"heading": "Rationale"},
-            "alternatives": {"heading": "Alternatives Considered"},
-            "consequences": {"heading": "Consequences"},
             "intent": {"heading": "Intent"},
             "key_files": {"heading": "Key Files"},
             "architecture": {"heading": "Architecture"},
             "sub_components": {"heading": "Sub-Components"},
             "current_state": {"heading": "Current State"},
             "constraint": {"heading": "Constraint"},
+            "rationale": {"heading": "Rationale"},
             "scope": {"heading": "Scope"},
             "prerequisites": {"heading": "Prerequisites"},
             "steps": {"heading": "Steps"},
             "output": {"heading": "Output"},
-            "options": {"heading": "Options"},
-            "blocked_by": {"heading": "Blocked By"},
             "applicable_rules": {"heading": "Applicable Rules"},
             "synthesized": {"heading": "Synthesized"},
             "entries": {"heading": "Entries"},
             "related": {"heading": "Related", "position": "last", "format": "wikilinks"},
         },
         "types": {
+            "project": ["preamble", "architecture", "sub_components", "current_state", "applicable_rules", "synthesized", "related"],
             "concept": ["preamble", "mechanism", "implications", "applicable_rules", "synthesized", "related"],
-            "decision": ["preamble", "decision", "rationale", "alternatives", "consequences", "applicable_rules", "synthesized", "related"],
             "system": ["preamble", "intent", "key_files", "architecture", "sub_components", "current_state", "applicable_rules", "synthesized", "related"],
-            "pattern": ["preamble", "applicable_rules", "synthesized", "related"],
+            "template": ["preamble", "applicable_rules", "synthesized", "related"],
             "rule": ["preamble", "constraint", "rationale", "scope", "applicable_rules", "synthesized", "related"],
             "procedure": ["preamble", "prerequisites", "steps", "output", "applicable_rules", "synthesized", "related"],
             "lesson": ["preamble", "applicable_rules", "synthesized", "related"],
-            "drift": ["preamble", "options", "blocked_by", "applicable_rules", "synthesized", "related"],
             "goal": ["preamble", "applicable_rules", "synthesized", "related"],
-            "feature": ["preamble", "applicable_rules", "synthesized", "related"],
             "findings": ["preamble", "entries"],
         },
     }
@@ -187,12 +195,18 @@ def vault_dir(tmp_path: Path) -> Path:
         yaml.dump(body_schema, default_flow_style=False), encoding="utf-8"
     )
 
-    # Create type folders
-    for folder in ["concept", "decision", "goal", "system", "drift", "pattern", "lesson", "rule", "findings"]:
+    # Create directory structure:
+    # - testproject/{concept,goal,system} for project-scoped types
+    # - lesson/, rule/, findings/ for root-scoped types
+    proj = tmp_path / "testproject"
+    proj.mkdir()
+    for folder in ["concept", "goal", "system"]:
+        (proj / folder).mkdir()
+    for folder in ["lesson", "rule", "findings"]:
         (tmp_path / folder).mkdir()
 
-    # Create sample entities
-    _write_entity(tmp_path / "concept" / "Token Efficiency.md", {
+    # Create sample entities — project-scoped under testproject/
+    _write_entity(proj / "concept" / "Token Efficiency.md", {
         "title": "Token Efficiency",
         "guid": "a1a1a1a1-b2b2-c3c3-d4d4-e5e5e5e5e5e5",
         "type": ["concept"],
@@ -211,7 +225,7 @@ def vault_dir(tmp_path: Path) -> Path:
         - [[Architecture Overview]]
     """))
 
-    _write_entity(tmp_path / "concept" / "Architecture Overview.md", {
+    _write_entity(proj / "concept" / "Architecture Overview.md", {
         "title": "Architecture Overview",
         "guid": "b2b2b2b2-c3c3-d4d4-e5e5-f6f6f6f6f6f6",
         "type": ["concept"],
@@ -230,26 +244,34 @@ def vault_dir(tmp_path: Path) -> Path:
         - [[Storage Layer]]
     """))
 
-    _write_entity(tmp_path / "decision" / "YAML For Data.md", {
+    _write_entity(proj / "concept" / "YAML For Data.md", {
         "title": "YAML for data, markdown for prose",
         "guid": "c3c3c3c3-d4d4-e5e5-f6f6-a7a7a7a7a7a7",
-        "type": ["decision"],
+        "type": ["concept"],
         "status": "active",
         "tags": ["architecture", "storage"],
         "project": ["TestProject"],
     }, textwrap.dedent("""\
         # YAML for data, markdown for prose
 
-        ## Decision
-
         - Use YAML for structured data, markdown for prose content
-
-        ## Rationale
-
         - YAML is 3-5x more token-efficient than markdown tables
     """))
 
-    _write_entity(tmp_path / "goal" / "Test Goal One.md", {
+    _write_entity(proj / "concept" / "Open Question.md", {
+        "title": "Open Test Question",
+        "guid": "f6f6f6f6-a7a7-b8b8-c9c9-d0d0d0d0d0d0",
+        "type": ["concept"],
+        "status": "draft",
+        "tags": ["architecture"],
+        "project": ["TestProject"],
+    }, textwrap.dedent("""\
+        # Open Test Question
+
+        Should we add caching to the storage layer? Performance vs. staleness trade-off.
+    """))
+
+    _write_entity(proj / "goal" / "Test Goal One.md", {
         "title": "Test goal one",
         "guid": "d4d4d4d4-e5e5-f6f6-a7a7-b8b8b8b8b8b8",
         "type": ["goal"],
@@ -262,7 +284,7 @@ def vault_dir(tmp_path: Path) -> Path:
         - A test goal for unit testing
     """))
 
-    _write_entity(tmp_path / "system" / "Storage Layer.md", {
+    _write_entity(proj / "system" / "Storage Layer.md", {
         "title": "Storage Layer",
         "guid": "e5e5e5e5-f6f6-a7a7-b8b8-c9c9c9c9c9c9",
         "type": ["system"],
@@ -282,19 +304,8 @@ def vault_dir(tmp_path: Path) -> Path:
         - [[Architecture Overview]]
     """))
 
-    _write_entity(tmp_path / "drift" / "Open Question.md", {
-        "title": "Open Test Question",
-        "guid": "f6f6f6f6-a7a7-b8b8-c9c9-d0d0d0d0d0d0",
-        "type": ["drift"],
-        "status": "open",
-        "tags": ["architecture"],
-        "project": ["TestProject"],
-    }, textwrap.dedent("""\
-        # Open Test Question
-
-        Should we add caching to the storage layer? Performance vs. staleness trade-off.
-    """))
-
+    # Root-scoped entities
+    # Root-scoped entities
     _write_entity(tmp_path / "lesson" / "Git Pipe Deadlock.md", {
         "title": "Git Pipe Deadlock on Windows",
         "guid": "a7a7a7a7-b8b8-c9c9-d0d0-e1e1e1e1e1e1",
@@ -438,7 +449,7 @@ class TestVaultReading:
     def test_read_types(self, vault: BrainVault):
         types = vault.read_types()
         assert "concept" in types
-        assert types["concept"]["count"] == 2  # Token Efficiency, Architecture Overview
+        assert types["concept"]["count"] == 4  # Token Efficiency, Architecture Overview, YAML For Data, Open Question
         assert types["system"]["count"] == 1  # Storage Layer
         assert types["goal"]["count"] == 1
 
@@ -448,8 +459,8 @@ class TestVaultReading:
         assert entity["guid"] == "a1a1a1a1-b2b2-c3c3-d4d4-e5e5e5e5e5e5"
         assert "Architecture Overview" in entity["links"]
 
-    def test_read_entity_by_frontmatter_id(self, vault: BrainVault):
-        """With self-managed IDs removed, resolution falls back to guid or title."""
+    def test_read_entity_by_filename_stem(self, vault: BrainVault):
+        """Resolution by filename stem works across project subdirectories."""
         entity = vault.read_entity("YAML For Data")
         assert entity["frontmatter"]["title"] == "YAML for data, markdown for prose"
 
@@ -508,7 +519,7 @@ class TestQuery:
         assert "Token Efficiency" not in titles
 
     def test_query_by_status(self, vault: BrainVault):
-        results = vault.query(status="open")
+        results = vault.query(status="draft")
         assert len(results) == 1
         assert results[0]["title"] == "Open Test Question"
 
@@ -520,7 +531,21 @@ class TestQuery:
 
     def test_query_background_relevance(self, vault: BrainVault, vault_dir: Path):
         """Entities from other projects should be sorted as 'background'."""
-        _write_entity(vault_dir / "concept" / "Other Project Thing.md", {
+        # Create a second project dir with an entity
+        other_dir = vault_dir / "otherproject" / "concept"
+        other_dir.mkdir(parents=True)
+        # Register the project in brief.yml
+        brief_path = vault_dir / "brief.yml"
+        import yaml as _yaml
+        brief = _yaml.safe_load(brief_path.read_text(encoding="utf-8"))
+        brief["projects"]["OtherProject"] = {
+            "name": "Other Project",
+            "dir": "otherproject",
+            "summary": "Another project.",
+        }
+        brief_path.write_text(_yaml.dump(brief, default_flow_style=False), encoding="utf-8")
+
+        _write_entity(other_dir / "Other Project Thing.md", {
             "title": "Other Project Thing",
             "guid": "zzz-999",
             "type": ["concept"],
@@ -559,9 +584,9 @@ class TestSearch:
         assert "Token Efficiency" in titles
 
     def test_search_with_type_filter(self, vault: BrainVault):
-        results = vault.search("architecture", entity_type="decision")
+        results = vault.search("architecture", entity_type="system")
         for r in results:
-            assert r["type"] == "decision"
+            assert r["type"] == "system"
 
     def test_search_with_tag_filter(self, vault: BrainVault):
         results = vault.search("architecture", tag="storage")
@@ -603,7 +628,7 @@ class TestLinkChecking:
 
     def test_broken_link_detected(self, vault: BrainVault, vault_dir: Path):
         """Add an entity with a broken link and verify it's detected."""
-        _write_entity(vault_dir / "concept" / "Broken Links Test.md", {
+        _write_entity(vault_dir / "testproject" / "concept" / "Broken Links Test.md", {
             "title": "Broken Links Test",
             "guid": "yyy-888",
             "type": ["concept"],
@@ -683,9 +708,10 @@ class TestSynthesize:
         assert results[0]["action"] == "created"
         assert results[0]["claims_count"] == 2
 
-        # Verify the file was actually created
+        # Verify the file was actually created under the project directory
         path = vault_dir / results[0]["path"]
         assert path.exists()
+        assert "testproject" in str(results[0]["path"])
         text = path.read_text(encoding="utf-8")
         fm, body = _parse_frontmatter(text)
         assert fm["title"] == "Brand New Concept"
@@ -703,7 +729,7 @@ class TestSynthesize:
             ],
             "relationships": [],
             "matched_entity": {
-                "path": "concept/Token Efficiency.md",
+                "path": "testproject/concept/Token Efficiency.md",
             },
         }]
         results = vault.synthesize(candidates)
@@ -712,7 +738,7 @@ class TestSynthesize:
         assert "mcp" in results[0]["added_tags"]
 
         # Verify the file was updated
-        text = (vault_dir / "concept" / "Token Efficiency.md").read_text(encoding="utf-8")
+        text = (vault_dir / "testproject" / "concept" / "Token Efficiency.md").read_text(encoding="utf-8")
         assert "Synthesis merging adds novel claims" in text
         fm, _ = _parse_frontmatter(text)
         assert "mcp" in fm["tags"]
@@ -728,7 +754,7 @@ class TestSynthesize:
             ],
             "relationships": [],
             "matched_entity": {
-                "path": "concept/Token Efficiency.md",
+                "path": "testproject/concept/Token Efficiency.md",
             },
         }]
         results = vault.synthesize(candidates)
@@ -759,7 +785,7 @@ class TestSynthesize:
         assert any("totally_invalid_tag" in w for w in results[0].get("tag_warnings", []))
 
         # Verify invalid tag was not persisted
-        text = (vault_dir / "concept" / "Tag Test Entity.md").read_text(encoding="utf-8")
+        text = (vault_dir / "testproject" / "concept" / "Tag Test Entity.md").read_text(encoding="utf-8")
         fm, _ = _parse_frontmatter(text)
         assert "totally_invalid_tag" not in fm["tags"]
         assert "core" in fm["tags"]
@@ -789,8 +815,6 @@ class TestGetRelevantContext:
         result = vault.get_relevant_context("token efficiency performance")
         assert result["entity_count"] > 0
         assert "entities" in result
-        assert "decisions" in result
-        assert "drift" in result
         assert "coverage_gaps" in result
 
     def test_includes_related_synopses(self, vault: BrainVault):
@@ -893,7 +917,7 @@ class TestUpdateBody:
         assert result["action"] == "created"
 
         # Verify section was inserted before ## Related
-        text = (vault_dir / "concept" / "Token Efficiency.md").read_text(encoding="utf-8")
+        text = (vault_dir / "testproject" / "concept" / "Token Efficiency.md").read_text(encoding="utf-8")
         rules_pos = text.index("## Applicable Rules")
         related_pos = text.index("## Related")
         assert rules_pos < related_pos
@@ -911,7 +935,7 @@ class TestUpdateBody:
         )
         assert result["action"] == "replaced"
 
-        text = (vault_dir / "concept" / "Token Efficiency.md").read_text(encoding="utf-8")
+        text = (vault_dir / "testproject" / "concept" / "Token Efficiency.md").read_text(encoding="utf-8")
         assert "[[Storage Layer]]" in text
         assert text.count("## Applicable Rules") == 1
 
@@ -923,7 +947,7 @@ class TestUpdateBody:
         )
         assert result["action"] == "created"
 
-        text = (vault_dir / "system" / "Storage Layer.md").read_text(encoding="utf-8")
+        text = (vault_dir / "testproject" / "system" / "Storage Layer.md").read_text(encoding="utf-8")
         assert "## Intent" in text
         assert "## Related" in text
         assert "## Applicable Rules" in text
@@ -970,7 +994,7 @@ class TestUpdateBody:
         )
         assert result["action"] == "created"
 
-        text = (vault_dir / "system" / "Storage Layer.md").read_text(encoding="utf-8")
+        text = (vault_dir / "testproject" / "system" / "Storage Layer.md").read_text(encoding="utf-8")
         assert "The storage layer handles all file I/O." in text
         # Preamble should appear before ## Intent
         preamble_pos = text.index("The storage layer handles all file I/O.")
@@ -986,7 +1010,7 @@ class TestUpdateBody:
         )
         assert result["action"] == "replaced"
 
-        text = (vault_dir / "concept" / "Token Efficiency.md").read_text(encoding="utf-8")
+        text = (vault_dir / "testproject" / "concept" / "Token Efficiency.md").read_text(encoding="utf-8")
         assert "New preamble text replacing the bullets." in text
         assert "L0 bootstrap costs" not in text  # Old content gone
 
@@ -997,7 +1021,7 @@ class TestUpdateBody:
         )
         assert result["action"] == "deleted"
 
-        text = (vault_dir / "concept" / "Token Efficiency.md").read_text(encoding="utf-8")
+        text = (vault_dir / "testproject" / "concept" / "Token Efficiency.md").read_text(encoding="utf-8")
         assert "L0 bootstrap costs" not in text
         assert "## Related" in text  # Other sections preserved
 
@@ -1010,7 +1034,7 @@ class TestUpdateBody:
         )
         assert result["action"] == "deleted"
 
-        text = (vault_dir / "system" / "Storage Layer.md").read_text(encoding="utf-8")
+        text = (vault_dir / "testproject" / "system" / "Storage Layer.md").read_text(encoding="utf-8")
         assert "## Intent" not in text
         assert "## Related" in text  # Other sections preserved
 
@@ -1023,7 +1047,7 @@ class TestUpdateBody:
 
     def test_delete_non_schema_field(self, vault: BrainVault, vault_dir: Path):
         # First manually add an orphan heading that isn't in the schema
-        path = vault_dir / "system" / "Storage Layer.md"
+        path = vault_dir / "testproject" / "system" / "Storage Layer.md"
         text = path.read_text(encoding="utf-8")
         text = text.replace(
             "## Related",
@@ -1049,7 +1073,7 @@ class TestUpdateBody:
         )
         assert result["action"] == "replaced"
 
-        text = (vault_dir / "system" / "Storage Layer.md").read_text(encoding="utf-8")
+        text = (vault_dir / "testproject" / "system" / "Storage Layer.md").read_text(encoding="utf-8")
         assert "- [[Token Efficiency]]" in text
         assert "- [[Architecture Overview]]" in text
         assert text.count("## Related") == 1
@@ -1069,7 +1093,7 @@ class TestUpdateBody:
         )
         assert result["action"] == "deleted"
 
-        text = (vault_dir / "system" / "Storage Layer.md").read_text(encoding="utf-8")
+        text = (vault_dir / "testproject" / "system" / "Storage Layer.md").read_text(encoding="utf-8")
         assert "## Related" not in text
         assert "## Intent" in text  # Other sections preserved
 
@@ -1085,7 +1109,7 @@ class TestUpdateBody:
         )
         assert result["action"] == "created"
 
-        text = (vault_dir / "system" / "Storage Layer.md").read_text(encoding="utf-8")
+        text = (vault_dir / "testproject" / "system" / "Storage Layer.md").read_text(encoding="utf-8")
         intent_pos = text.index("## Intent")
         arch_pos = text.index("## Architecture")
         related_pos = text.index("## Related")
@@ -1101,13 +1125,13 @@ class TestArchiveEntity:
     def test_archive_moves_file(self, vault: BrainVault, vault_dir: Path):
         result = vault.archive_entity("YAML For Data")
         assert result["archived"] == "YAML For Data"
-        assert Path(result["from"]) == Path("decision/YAML For Data.md")
-        assert Path(result["to"]) == Path(".trash/decision/YAML For Data.md")
+        assert Path(result["from"]) == Path("testproject/concept/YAML For Data.md")
+        assert Path(result["to"]) == Path(".trash/testproject/concept/YAML For Data.md")
 
         # Original file should be gone
-        assert not (vault_dir / "decision" / "YAML For Data.md").exists()
+        assert not (vault_dir / "testproject" / "concept" / "YAML For Data.md").exists()
         # Archived file should exist
-        assert (vault_dir / ".trash" / "decision" / "YAML For Data.md").exists()
+        assert (vault_dir / ".trash" / "testproject" / "concept" / "YAML For Data.md").exists()
 
     def test_archived_entity_excluded_from_search(self, vault: BrainVault):
         vault.archive_entity("YAML For Data")
@@ -1117,7 +1141,7 @@ class TestArchiveEntity:
 
     def test_archived_entity_excluded_from_query(self, vault: BrainVault):
         vault.archive_entity("YAML For Data")
-        results = vault.query(entity_type="decision")
+        results = vault.query(entity_type="concept")
         ids = [r["id"] for r in results]
         assert "YAML For Data" not in ids
 
@@ -1133,7 +1157,7 @@ class TestArchiveEntity:
 
     def test_archive_creates_trash_structure(self, vault: BrainVault, vault_dir: Path):
         vault.archive_entity("Open Question")
-        assert (vault_dir / ".trash" / "drift" / "Open Question.md").exists()
+        assert (vault_dir / ".trash" / "testproject" / "concept" / "Open Question.md").exists()
 
     def test_duplicate_archive_raises(self, vault: BrainVault):
         vault.archive_entity("YAML For Data")
@@ -1155,10 +1179,10 @@ class TestArchiveEntity:
     def test_query_include_archived(self, vault: BrainVault):
         vault.archive_entity("YAML For Data")
         # Default: excluded
-        results = vault.query(entity_type="decision")
+        results = vault.query(entity_type="concept")
         assert not any(r["id"] == "YAML For Data" for r in results)
         # With include_archived: found, marked as archived
-        results = vault.query(entity_type="decision", include_archived=True)
+        results = vault.query(entity_type="concept", include_archived=True)
         archived = [r for r in results if r["id"] == "YAML For Data"]
         assert len(archived) == 1
         assert archived[0]["archived"] is True
@@ -1206,7 +1230,7 @@ class TestBatchedPush:
 
         # Create vault structure
         (tmp_path / "brief.yml").write_text("active-project: Test\n")
-        for folder in ["concept", "decision", "goal", "system", "drift", "pattern", "lesson", "rule"]:
+        for folder in ["lesson", "rule"]:
             (tmp_path / folder).mkdir(exist_ok=True)
         (tmp_path / "types.yml").write_text("{}")
         (tmp_path / "tags.yml").write_text("{}")
@@ -1221,7 +1245,8 @@ class TestBatchedPush:
         assert vault._push_thread is not None
 
         # Create a file and commit it
-        test_file = tmp_path / "concept" / "Test.md"
+        (tmp_path / "lesson").mkdir(exist_ok=True)
+        test_file = tmp_path / "lesson" / "Test.md"
         test_file.write_text("---\ntitle: Test\n---\n# Test\n")
 
         vault._commit_and_push_batch([test_file], "test commit")
@@ -1247,7 +1272,7 @@ class TestBatchedPush:
     def test_push_timer_respects_stop_event(self, tmp_path: Path):
         """Push timer loop exits when stop event is set."""
         (tmp_path / "brief.yml").write_text("active-project: Test\n")
-        for folder in ["concept", "decision", "goal", "system", "drift", "pattern", "lesson", "rule"]:
+        for folder in ["lesson", "rule"]:
             (tmp_path / folder).mkdir(exist_ok=True)
         (tmp_path / "types.yml").write_text("{}")
         (tmp_path / "tags.yml").write_text("{}")

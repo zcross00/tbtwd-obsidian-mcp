@@ -272,10 +272,10 @@ class BrainVault:
 
         if active_project:
             next_steps.append(
-                f'query(project="{active_project}", entity_type="decision") — load active decisions'
+                f'query(project="{active_project}", entity_type="system") — load component tree'
             )
             next_steps.append(
-                f'query(project="{active_project}", entity_type="drift") — check open questions'
+                f'query(project="{active_project}", entity_type="goal") — load project goals'
             )
 
         # Always suggest checking goals
@@ -317,29 +317,50 @@ class BrainVault:
         """Return the parsed type registry from types.yml.
 
         Each key is a type name (e.g. 'goal') with description, icon, and
-        a count of entities currently in that folder.
+        a count of entities across all locations (root + project dirs).
         """
         types_path = self.root / "types.yml"
         if not types_path.exists():
             raise FileNotFoundError("types.yml not found in vault root")
         registry = yaml.safe_load(types_path.read_text(encoding="utf-8")) or {}
 
-        # Enrich with entity counts
+        # Count entities from _iter_entity_files for accuracy
+        counts: dict[str, int] = {}
+        for type_name, _ in self._iter_entity_files():
+            counts[type_name] = counts.get(type_name, 0) + 1
+
         for type_name, meta in registry.items():
-            folder = self.root / type_name
-            if folder.is_dir():
-                meta["count"] = sum(
-                    1 for p in folder.iterdir()
-                    if p.is_file() and p.suffix == ".md" and p.name != "_index.md"
-                )
-            else:
-                meta["count"] = 0
+            meta["count"] = counts.get(type_name, 0)
         return registry
 
     # -- type folders & entity files ----------------------------------------
 
+    def _project_dirs(self) -> dict[str, Path]:
+        """Return {project_key: directory_path} from brief.yml 'dir' fields."""
+        try:
+            brief_path = self.root / "brief.yml"
+            if not brief_path.exists():
+                return {}
+            brief = yaml.safe_load(brief_path.read_text(encoding="utf-8")) or {}
+            projects = brief.get("projects", {})
+            result: dict[str, Path] = {}
+            for proj_key, proj_meta in projects.items():
+                dir_name = proj_meta.get("dir")
+                if dir_name:
+                    result[proj_key] = self.root / dir_name
+            return result
+        except Exception:
+            return {}
+
+    def _project_dir_for(self, project: str | None) -> Path | None:
+        """Return the directory path for a given project key, or None."""
+        if not project:
+            return None
+        dirs = self._project_dirs()
+        return dirs.get(project)
+
     def _type_folders(self) -> list[str]:
-        """Return the names of all type-based subfolders (e.g. goal, system)."""
+        """Return the names of all type-based subfolders at the vault root."""
         return [
             d.name
             for d in self.root.iterdir()
@@ -349,21 +370,81 @@ class BrainVault:
     def _iter_entity_files(
         self, *, include_archived: bool = False
     ) -> list[tuple[str, Path]]:
-        """Return (type_folder, path) for every .md entity file in type folders.
+        """Return (type_name, path) for every .md entity file in the vault.
 
-        When *include_archived* is True, also yields entities that have been
-        moved to ``.trash/<type>/`` by ``archive_entity``.
+        Scans three locations:
+        1. Root-level type folders: ``{vault_root}/{type}/*.md``
+        2. Project type subfolders: ``{vault_root}/{project_dir}/{type}/*.md``
+        3. Project root files: ``{vault_root}/{project_dir}/*.md`` (project entities)
+
+        When *include_archived* is True, also yields entities from ``.trash/``.
         """
         results: list[tuple[str, Path]] = []
-        for folder_name in sorted(self._type_folders()):
-            folder = self.root / folder_name
-            for p in sorted(folder.iterdir()):
-                if p.is_file() and p.suffix == ".md" and p.name != "_index.md":
-                    results.append((folder_name, p))
+        project_dir_names = set()
+        proj_dirs = self._project_dirs()
+        for proj_path in proj_dirs.values():
+            if proj_path.is_dir():
+                project_dir_names.add(proj_path.name)
+
+        # 1. Root-level type folders (skip project dirs and ignored roots)
+        for d in sorted(self.root.iterdir()):
+            if (
+                d.is_dir()
+                and d.name not in _IGNORED_ROOTS
+                and d.name not in project_dir_names
+                and not d.name.startswith(".")
+            ):
+                for p in sorted(d.iterdir()):
+                    if p.is_file() and p.suffix == ".md" and p.name != "_index.md":
+                        results.append((d.name, p))
+
+        # 2 & 3. Project directories
+        for proj_key, proj_path in sorted(proj_dirs.items()):
+            if not proj_path.is_dir():
+                continue
+            # 3. Project root .md files (type: project)
+            for p in sorted(proj_path.iterdir()):
+                if p.is_file() and p.suffix == ".md":
+                    results.append(("project", p))
+            # 2. Project type subfolders
+            for sub in sorted(proj_path.iterdir()):
+                if sub.is_dir() and not sub.name.startswith("."):
+                    type_name = sub.name
+                    for p in sorted(sub.iterdir()):
+                        if p.is_file() and p.suffix == ".md" and p.name != "_index.md":
+                            results.append((type_name, p))
+
         if include_archived:
             trash_dir = self.root / ".trash"
             if trash_dir.is_dir():
-                for type_dir in sorted(trash_dir.iterdir()):
+                self._iter_trash_files(trash_dir, results)
+        return results
+
+    @staticmethod
+    def _iter_trash_files(
+        trash_dir: Path, results: list[tuple[str, Path]]
+    ) -> None:
+        """Append archived entity files from .trash/ to results.
+
+        Handles both flat ``.trash/{type}/`` and nested
+        ``.trash/{project_dir}/{type}/`` structures.
+        """
+        for item in sorted(trash_dir.iterdir()):
+            if not item.is_dir():
+                continue
+            # Check if this is a type folder (.trash/concept/) or a project
+            # folder (.trash/sovereign/concept/)
+            has_md_files = any(
+                p.is_file() and p.suffix == ".md" for p in item.iterdir()
+            )
+            if has_md_files:
+                # Flat: .trash/{type}/*.md
+                for p in sorted(item.iterdir()):
+                    if p.is_file() and p.suffix == ".md":
+                        results.append((item.name, p))
+            else:
+                # Nested: .trash/{project_dir}/{type}/*.md
+                for type_dir in sorted(item.iterdir()):
                     if type_dir.is_dir():
                         for p in sorted(type_dir.iterdir()):
                             if p.is_file() and p.suffix == ".md":
@@ -794,10 +875,13 @@ class BrainVault:
     # -- archival ----------------------------------------------------------
 
     def archive_entity(self, entity_id: str) -> dict[str, Any]:
-        """Move an entity to .trash/ preserving its type folder structure.
+        """Move an entity to .trash/ preserving its directory structure.
 
         Archived entities are excluded from search, query, and validate_action
         because _iter_entity_files skips dot-prefixed directories.
+
+        For root-level entities: ``.trash/{type}/{file}.md``
+        For project entities: ``.trash/{project_dir}/{type}/{file}.md``
 
         Args:
             entity_id: Entity identifier (slug, path, frontmatter ID, or GUID).
@@ -809,17 +893,14 @@ class BrainVault:
         if path is None:
             raise FileNotFoundError(f"Entity {entity_id} not found in vault")
 
-        # Determine type folder (e.g. "decision") from the entity's parent
-        type_folder = path.parent.name
+        # Preserve relative directory structure under .trash/
+        rel_path = path.relative_to(self.root)
+        trash_dest = self.root / ".trash" / rel_path
+        trash_dest.parent.mkdir(parents=True, exist_ok=True)
 
-        # Build the archive destination: .trash/<type>/<filename>
-        trash_dir = self.root / ".trash" / type_folder
-        trash_dir.mkdir(parents=True, exist_ok=True)
-        dest = trash_dir / path.name
-
-        if dest.exists():
+        if trash_dest.exists():
             raise FileExistsError(
-                f"Archive destination already exists: .trash/{type_folder}/{path.name}"
+                f"Archive destination already exists: .trash/{rel_path}"
             )
 
         # Find incoming links (other entities that reference this one)
@@ -834,13 +915,13 @@ class BrainVault:
 
         # Move the file
         import shutil
-        shutil.move(str(path), str(dest))
+        shutil.move(str(path), str(trash_dest))
 
         # Git: stage the deletion and the new file
         rel_old = str(path.relative_to(self.root))
-        rel_new = str(dest.relative_to(self.root))
+        rel_new = str(trash_dest.relative_to(self.root))
         git_info = self._archive_commit_and_push(
-            rel_old, rel_new, f"archive {entity_id} to .trash/{type_folder}/"
+            rel_old, rel_new, f"archive {entity_id}"
         )
 
         return {
@@ -1347,6 +1428,35 @@ class BrainVault:
 
         return results
 
+    def _entity_folder_for(
+        self, entity_type: str, project: str | None
+    ) -> Path:
+        """Return the directory where a new entity of the given type should live.
+
+        Project-scoped types (scope: project in types.yml) go under
+        ``{project_dir}/{type}/``.  Root-scoped types stay at
+        ``{vault_root}/{type}/``.  The ``project`` type itself goes at
+        the project directory root (no subfolder).
+        """
+        types_path = self.root / "types.yml"
+        registry = {}
+        if types_path.exists():
+            registry = yaml.safe_load(types_path.read_text(encoding="utf-8")) or {}
+
+        type_meta = registry.get(entity_type, {})
+        scope = type_meta.get("scope", "root")
+
+        if scope == "project" and entity_type != "project":
+            proj_dir = self._project_dir_for(project)
+            if proj_dir:
+                return proj_dir / entity_type
+        elif entity_type == "project":
+            proj_dir = self._project_dir_for(project)
+            if proj_dir:
+                return proj_dir
+
+        return self.root / entity_type
+
     def _synthesize_new(
         self,
         *,
@@ -1359,7 +1469,8 @@ class BrainVault:
     ) -> dict[str, Any]:
         """Create a brand-new entity file from a concept candidate."""
         # Determine folder
-        type_folder = self.root / entity_type
+        proj = project or self._active_project()
+        type_folder = self._entity_folder_for(entity_type, proj)
         if not type_folder.is_dir():
             type_folder.mkdir(parents=True, exist_ok=True)
 
@@ -1372,12 +1483,11 @@ class BrainVault:
             }
 
         # Build frontmatter
-        proj = project or self._active_project()
         fm: dict[str, Any] = {
             "title": title,
             "guid": str(uuid.uuid4()),
             "type": [entity_type],
-            "status": entity_type if entity_type in ("concept", "drift") else "draft",
+            "status": "draft",
             "tags": tags,
         }
         if proj:
@@ -1533,13 +1643,11 @@ class BrainVault:
             topic: Natural-language description of what the agent is working on.
             max_entities: Maximum full entities to return (default 5).
             include_types: Optional filter to specific entity types
-                (e.g. ["decision", "lesson"]).
+                (e.g. ["concept", "lesson"]).
 
         Returns a dict with:
             - entities: full content of the top-N most relevant entities
             - related: synopses of entities linked from the top results
-            - decisions: any decision entities that apply
-            - drift: any open questions/risks that apply
             - coverage_gaps: aspects of the topic with no vault coverage
         """
         # 1. Search for keyword matches
@@ -1576,15 +1684,7 @@ class BrainVault:
             except FileNotFoundError:
                 continue
 
-        # 4. Separately find decisions and drift entries related to the topic
-        decisions = self.search(
-            topic, entity_type="decision", max_results=3
-        )
-        drift = self.search(
-            topic, entity_type="drift", max_results=3
-        )
-
-        # 5. Identify coverage gaps — query words that matched nothing
+        # 4. Identify coverage gaps — query words that matched nothing
         query_words = {w.lower() for w in re.findall(r"[a-zA-Z0-9]{3,}", topic)}
         covered_words: set[str] = set()
         for entity in entities:
@@ -1596,7 +1696,7 @@ class BrainVault:
         uncovered = query_words - covered_words
         coverage_gaps = list(uncovered) if uncovered else []
 
-        # 6. Build related synopses from linked entities not in the top results
+        # 5. Build related synopses from linked entities not in the top results
         related_synopses: list[dict[str, Any]] = []
         for linked_title in sorted(all_linked)[:10]:
             syn = self._synopsis(linked_title)
@@ -1608,8 +1708,6 @@ class BrainVault:
             "entity_count": len(entities),
             "entities": entities,
             "related": related_synopses,
-            "decisions": decisions,
-            "drift": drift,
             "coverage_gaps": coverage_gaps,
         }
 
@@ -1672,23 +1770,16 @@ class BrainVault:
             entity_type = result.get("type", "")
             score = result.get("score", 0.0)
 
-            if entity_type == "decision" and score >= 2.0:
-                # High-scoring decision matches need careful review —
-                # they may constrain or conflict with the proposed action
-                conflicts.append(result)
-            elif entity_type == "lesson" and score >= 2.0:
+            if entity_type == "lesson" and score >= 2.0:
                 # Lessons from past experience are warnings
                 conflicts.append(result)
             elif entity_type == "rule" and score >= 1.5:
                 # Rules are enforceable constraints — always surface
                 if result not in applicable_rules:
                     applicable_rules.append(result)
-            elif entity_type in ("pattern", "procedure"):
-                # Existing patterns/procedures may already solve this
+            elif entity_type in ("concept", "procedure"):
+                # Existing concepts/procedures may already cover this
                 supporting.append(result)
-            elif entity_type == "drift" and score >= 1.5:
-                # Open questions signal uncertainty
-                informational.append(result)
             elif score >= 1.5:
                 informational.append(result)
 
@@ -1697,7 +1788,7 @@ class BrainVault:
             status = "conflict"
             message = (
                 f"Found {len(conflicts)} potentially conflicting "
-                f"decision(s)/lesson(s). Review before proceeding."
+                f"lesson(s). Review before proceeding."
             )
         elif applicable_rules or supporting or informational:
             if applicable_rules and not supporting and not informational:
