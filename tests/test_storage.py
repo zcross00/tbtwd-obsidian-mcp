@@ -1285,6 +1285,144 @@ class TestProjectManagement:
 
 
 # ---------------------------------------------------------------------------
+# Integration tests: update_project
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateProject:
+    def test_update_summary(self, vault: BrainVault, vault_dir: Path):
+        result = vault.update_project("TestProject", summary="Updated project summary.")
+        assert result["updated"] == "TestProject"
+        assert result["project"]["summary"] == "Updated project summary."
+
+        # Brief should reflect the change
+        brief = vault._read_brief_raw()
+        assert brief["projects"]["TestProject"]["summary"] == "Updated project summary."
+
+    def test_update_entity_body_synced(self, vault: BrainVault, vault_dir: Path):
+        """Updating summary should also rewrite the companion entity body."""
+        vault.update_project("TestProject", summary="Resynced summary.")
+        entity_path = vault_dir / "testproject" / "Test Project.md"
+        text = entity_path.read_text(encoding="utf-8")
+        assert "Resynced summary." in text
+
+    def test_update_entity_preserves_guid(self, vault: BrainVault, vault_dir: Path):
+        """Syncing the entity must not generate a new GUID."""
+        from tbtwd_obsidian_mcp.storage import _parse_frontmatter
+
+        entity_path = vault_dir / "testproject" / "Test Project.md"
+        original_text = entity_path.read_text(encoding="utf-8")
+        original_fm, _ = _parse_frontmatter(original_text)
+        original_guid = original_fm.get("guid")
+
+        vault.update_project("TestProject", summary="Preserve GUID check.")
+
+        updated_text = entity_path.read_text(encoding="utf-8")
+        updated_fm, _ = _parse_frontmatter(updated_text)
+        assert updated_fm.get("guid") == original_guid
+
+    def test_update_repo_set(self, vault: BrainVault):
+        result = vault.update_project("TestProject", repo="user/new-repo")
+        assert result["project"]["repo"] == "user/new-repo"
+
+    def test_update_repo_clear(self, vault: BrainVault):
+        vault.update_project("TestProject", repo="user/temp-repo")
+        result = vault.update_project("TestProject", repo="")
+        assert result["project"]["repo"] is None
+
+    def test_update_stack(self, vault: BrainVault):
+        result = vault.update_project("TestProject", stack=["Python", "FastAPI"])
+        assert result["project"]["stack"] == ["Python", "FastAPI"]
+
+    def test_update_goals_replace(self, vault: BrainVault):
+        result = vault.update_project(
+            "TestProject",
+            goals={"New Goal": "New goal summary."},
+        )
+        assert "New Goal" in result["project"]["goals"]
+        assert result["project"]["goal_count"] == 1
+
+    def test_update_goals_add(self, vault: BrainVault):
+        result = vault.update_project(
+            "TestProject",
+            add_goals={"Added Goal": "Added via add_goals."},
+        )
+        assert "Added Goal" in result["project"]["goals"]
+
+    def test_update_goals_remove(self, vault: BrainVault):
+        vault.update_project("TestProject", goals={"Keep": "k", "Remove": "r"})
+        result = vault.update_project("TestProject", remove_goals=["Remove"])
+        assert "Remove" not in result["project"]["goals"]
+        assert "Keep" in result["project"]["goals"]
+
+    def test_update_no_fields_raises(self, vault: BrainVault):
+        with pytest.raises(ValueError, match="No fields provided"):
+            vault.update_project("TestProject")
+
+    def test_update_missing_project_raises(self, vault: BrainVault):
+        with pytest.raises(FileNotFoundError):
+            vault.update_project("NoSuchProject", summary="x")
+
+
+# ---------------------------------------------------------------------------
+# Integration tests: delete_project
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteProject:
+    def test_delete_non_active(self, vault: BrainVault, vault_dir: Path):
+        result = vault.delete_project("OtherProject")
+        assert result["deleted"] == "OtherProject"
+        assert result["replaced_active_with"] is None
+        # Registry entry removed
+        brief = vault._read_brief_raw()
+        assert "OtherProject" not in brief["projects"]
+        # Directory archived to .trash/
+        assert result["archived_to"] is not None
+        trash_path = vault_dir / result["archived_to"]
+        assert trash_path.is_dir()
+
+    def test_delete_active_requires_replace(self, vault: BrainVault):
+        with pytest.raises(ValueError, match="currently active"):
+            vault.delete_project("TestProject")
+
+    def test_delete_active_with_replace(self, vault: BrainVault, vault_dir: Path):
+        result = vault.delete_project("TestProject", replace_active="OtherProject")
+        assert result["deleted"] == "TestProject"
+        assert result["replaced_active_with"] == "OtherProject"
+        assert result["brief"]["active-project"] == "OtherProject"
+
+    def test_delete_force(self, vault: BrainVault, vault_dir: Path):
+        project_dir = vault_dir / "otherproject"
+        assert project_dir.is_dir()
+        result = vault.delete_project("OtherProject", force=True)
+        assert result["force_deleted"] is True
+        assert result["archived_to"] is None
+        assert not project_dir.exists()
+
+    def test_delete_dry_run(self, vault: BrainVault, vault_dir: Path):
+        result = vault.delete_project("OtherProject", dry_run=True)
+        assert result["dry_run"] is True
+        assert result["would_delete"] == "OtherProject"
+        # Nothing actually changed
+        brief = vault._read_brief_raw()
+        assert "OtherProject" in brief["projects"]
+        assert (vault_dir / "otherproject").is_dir()
+
+    def test_delete_missing_project_raises(self, vault: BrainVault):
+        with pytest.raises(FileNotFoundError):
+            vault.delete_project("NoSuchProject")
+
+    def test_delete_replace_active_same_key_raises(self, vault: BrainVault):
+        with pytest.raises(ValueError, match="cannot be the project being deleted"):
+            vault.delete_project("TestProject", replace_active="TestProject")
+
+    def test_delete_replace_active_missing_raises(self, vault: BrainVault):
+        with pytest.raises(FileNotFoundError):
+            vault.delete_project("TestProject", replace_active="NoSuchProject")
+
+
+# ---------------------------------------------------------------------------
 # Integration tests: update_body
 # ---------------------------------------------------------------------------
 

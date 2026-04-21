@@ -72,6 +72,8 @@ AUDIT TRAIL:
 WRITING:
 - switch_project: set the active project and optionally update focus for the current session orientation.
 - create_project: bootstrap a new project entry in brief.yml plus its directory tree and companion project entity.
+- update_project: update safe metadata fields (summary, repo, stack, goals) on an existing project.
+- delete_project: remove a project from the registry and archive its directory to .trash/. Supports dry_run preview.
 - update_brief: update brief.yml orientation state (currently active-project and focus). Auto-validates YAML-safe fields, commits, and pushes.
 - update_memory: update an entity's YAML frontmatter. Auto-validates links, commits, and pushes to GitHub.
 - update_body: update or create a named section in an entity's markdown body. Replaces existing \
@@ -351,6 +353,81 @@ def create_project(
         goals=goals,
         make_active=make_active,
         focus=focus,
+    )
+    return json.dumps(result, indent=2, default=str)
+
+
+@mcp.tool()
+def update_project(
+    project_key: str,
+    summary: str | None = None,
+    repo: str | None = None,
+    clear_repo: bool = False,
+    stack: list[str] | None = None,
+    goals: dict[str, str] | None = None,
+    add_goals: dict[str, str] | None = None,
+    remove_goals: list[str] | None = None,
+) -> str:
+    """Update safe metadata fields of an existing project.
+
+    Writable fields: summary, repo, stack, and goal registry entries.
+    Renaming key, name, or directory is not supported — use
+    create_project + delete_project for migrations.
+
+    Args:
+        project_key: Existing project key in brief.yml.
+        summary: New project summary (non-empty string).
+        repo: Repository URL to set. Pass clear_repo=True to clear the field.
+        clear_repo: If True, remove the repo field from the project.
+        stack: Full replacement for the technology stack list.
+        goals: Full replacement for the goal registry {title: summary}.
+        add_goals: Add or update individual goal entries {title: summary}.
+        remove_goals: Remove goal titles from the registry (not the files).
+    """
+    from tbtwd_obsidian_mcp.storage import _UNSET
+
+    vault = _get_vault()
+    repo_arg = "" if clear_repo else (repo if repo is not None else _UNSET)
+    result = vault.update_project(
+        project_key,
+        summary=summary,
+        repo=repo_arg,
+        stack=stack,
+        goals=goals,
+        add_goals=add_goals,
+        remove_goals=remove_goals,
+    )
+    return json.dumps(result, indent=2, default=str)
+
+
+@mcp.tool()
+def delete_project(
+    project_key: str,
+    replace_active: str | None = None,
+    dry_run: bool = False,
+    force: bool = False,
+) -> str:
+    """Remove a project from the registry and archive its directory.
+
+    If the project is currently active, ``replace_active`` must specify
+    another project key to activate before deletion.
+
+    The project directory is moved to ``.trash/`` by default.
+    Set ``force=True`` only to permanently hard-delete the directory.
+    Set ``dry_run=True`` to preview what would happen without making changes.
+
+    Args:
+        project_key: Project key to delete.
+        replace_active: Project key to activate when deleting the active project.
+        dry_run: Preview the operation without modifying anything.
+        force: Hard-delete the project directory instead of archiving to .trash/.
+    """
+    vault = _get_vault()
+    result = vault.delete_project(
+        project_key,
+        replace_active=replace_active,
+        dry_run=dry_run,
+        force=force,
     )
     return json.dumps(result, indent=2, default=str)
 

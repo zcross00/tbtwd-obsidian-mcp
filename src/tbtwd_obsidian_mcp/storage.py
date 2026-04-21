@@ -27,6 +27,9 @@ _WIKILINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
 # Root-level items that are not type folders
 _IGNORED_ROOTS: set[str] = {".obsidian", ".vscode", ".git", "Templates"}
 
+# Sentinel for "argument was not provided" (distinct from None)
+_UNSET: Any = object()
+
 
 def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     """Return (frontmatter_dict, body) from a file's text content."""
@@ -812,6 +815,230 @@ class BrainVault:
                 path.relative_to(self.root).as_posix() for path in created_paths[1:]
             ],
             "warnings": warnings,
+            **git_info,
+        }
+
+    def update_project(
+        self,
+        project_key: str,
+        *,
+        summary: str | None = None,
+        repo: Any = _UNSET,
+        stack: list[str] | None = None,
+        goals: dict[str, str] | None = None,
+        add_goals: dict[str, str] | None = None,
+        remove_goals: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Update safe metadata fields of an existing project.
+
+        Writable: summary, repo, stack, goal summaries.
+        Renaming key, name, or directory is not supported — use
+        create_project + delete_project for migrations.
+
+        Args:
+            project_key: Existing project key in brief.yml.
+            summary: New project summary (non-empty).
+            repo: Repository URL. Pass "" to clear, omit for no change.
+            stack: Full replacement for the technology stack list.
+            goals: Full replacement for the goal registry {title: summary}.
+            add_goals: Add or update individual goal entries {title: summary}.
+            remove_goals: Remove goal titles from the registry (not the files).
+        """
+        normalized_key = self._normalize_project_key(project_key)
+        brief = self._read_brief_raw()
+        entry = dict(self._project_entry(normalized_key, brief))
+
+        changed = False
+
+        if summary is not None:
+            entry["summary"] = self._normalize_required_text(
+                summary, field_name="summary"
+            )
+            changed = True
+
+        if repo is not _UNSET:
+            if not isinstance(repo, str):
+                raise ValueError("repo must be a string (pass '' to clear)")
+            normalized_repo = self._normalize_optional_text(repo, field_name="repo")
+            if normalized_repo is None:
+                entry.pop("repo", None)
+            else:
+                entry["repo"] = normalized_repo
+            changed = True
+
+        if stack is not None:
+            entry["stack"] = self._normalize_stack(stack)
+            changed = True
+
+        if goals is not None:
+            entry["goals"] = self._normalize_goals(goals)
+            changed = True
+
+        if add_goals is not None:
+            normalized_add = self._normalize_goals(add_goals)
+            current_goals = dict(entry.get("goals") or {})
+            current_goals.update(normalized_add)
+            entry["goals"] = current_goals
+            changed = True
+
+        if remove_goals is not None:
+            current_goals = dict(entry.get("goals") or {})
+            for title in remove_goals:
+                current_goals.pop(title, None)
+            entry["goals"] = current_goals
+            changed = True
+
+        if not changed:
+            raise ValueError("No fields provided to update")
+
+        brief["projects"][normalized_key] = entry
+        changed_paths: list[Path] = []
+        brief_path = self._brief_path()
+        self._write_brief_raw(brief)
+        changed_paths.append(brief_path)
+
+        # Sync companion project entity body if it exists (preserving GUID/frontmatter)
+        entity_path = self._project_entity_path(normalized_key, brief=brief)
+        if entity_path is not None:
+            text = entity_path.read_text(encoding="utf-8")
+            fm, _ = _parse_frontmatter(text)
+            name = entry.get("name", normalized_key)
+            new_summary = entry.get("summary", "")
+            new_stack = entry.get("stack", [])
+            new_goals = entry.get("goals", {})
+            body_lines = [f"# {name}", "", new_summary]
+            if new_stack:
+                body_lines.extend(["", "## Stack", "", ", ".join(new_stack)])
+            if new_goals:
+                body_lines.extend(["", "## Goals", ""])
+                for goal_title, goal_summary in new_goals.items():
+                    line = f"- [[{goal_title}]]"
+                    if goal_summary:
+                        line += f" \u2014 {goal_summary}"
+                    body_lines.append(line)
+            new_text = _serialize_frontmatter(fm, "\n".join(body_lines) + "\n")
+            entity_path.write_text(new_text, encoding="utf-8")
+            changed_paths.append(entity_path)
+
+        git_info = self._commit_and_push_batch(
+            changed_paths,
+            f"update project {normalized_key}: metadata",
+        )
+
+        return {
+            "updated": normalized_key,
+            "project": self.get_project(normalized_key),
+            **git_info,
+        }
+
+    def delete_project(
+        self,
+        project_key: str,
+        *,
+        replace_active: str | None = None,
+        dry_run: bool = False,
+        force: bool = False,
+    ) -> dict[str, Any]:
+        """Remove a project from the registry and archive its directory.
+
+        If the project is currently active, ``replace_active`` must specify
+        another project key to switch to before deletion.
+
+        The project directory is moved to ``.trash/`` unless ``force=True``,
+        which performs a hard delete (``shutil.rmtree``).
+
+        Pass ``dry_run=True`` to preview the operation without making changes.
+
+        Args:
+            project_key: Existing project key to remove.
+            replace_active: Project key to activate when deleting the active project.
+            dry_run: If True, return a preview dict without modifying anything.
+            force: If True, hard-delete the project directory instead of archiving.
+        """
+        import shutil
+
+        normalized_key = self._normalize_project_key(project_key)
+        brief = self._read_brief_raw()
+        entry = self._project_entry(normalized_key, brief)  # raises FileNotFoundError
+
+        is_active = brief.get("active-project") == normalized_key
+        if is_active and replace_active is None:
+            raise ValueError(
+                f"Project '{normalized_key}' is currently active. "
+                "Provide replace_active=<project_key> to activate before deleting."
+            )
+
+        normalized_replace: str | None = None
+        if replace_active is not None:
+            normalized_replace = self._normalize_project_key(replace_active)
+            if normalized_replace == normalized_key:
+                raise ValueError("replace_active cannot be the project being deleted")
+            self._project_entry(normalized_replace, brief)  # raises if missing
+
+        directory = entry.get("dir", "")
+        project_dir: Path | None = self.root / directory if directory else None
+        directory_exists = project_dir is not None and project_dir.is_dir()
+
+        # Scan for incoming cross-project references (entities outside the deleted project)
+        project_name = entry.get("name", normalized_key)
+        incoming_refs: list[str] = []
+        for _, entity_path in self._iter_entity_files():
+            if project_dir and directory_exists:
+                try:
+                    entity_path.relative_to(project_dir)
+                    continue  # entity is inside the deleted project — skip
+                except ValueError:
+                    pass
+            entity_text = entity_path.read_text(encoding="utf-8")
+            for link in extract_wikilinks(entity_text):
+                if link == project_name or link == normalized_key:
+                    rel = entity_path.relative_to(self.root).as_posix()
+                    incoming_refs.append(f"{rel}: [[{link}]]")
+
+        if dry_run:
+            return {
+                "dry_run": True,
+                "would_delete": normalized_key,
+                "directory": directory,
+                "directory_exists": directory_exists,
+                "would_replace_active_with": replace_active if is_active else None,
+                "incoming_refs": incoming_refs,
+                "incoming_ref_count": len(incoming_refs),
+            }
+
+        if is_active and normalized_replace is not None:
+            brief["active-project"] = normalized_replace
+
+        brief["projects"].pop(normalized_key, None)
+        brief_path = self._brief_path()
+        self._write_brief_raw(brief)
+
+        archived_to: str | None = None
+        if directory_exists and project_dir is not None:
+            if force:
+                shutil.rmtree(project_dir)
+            else:
+                trash_base = self.root / ".trash" / directory
+                if trash_base.exists():
+                    trash_dest = self.root / ".trash" / f"{directory}_{int(time.time())}"
+                else:
+                    trash_dest = trash_base
+                trash_dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(project_dir), str(trash_dest))
+                archived_to = trash_dest.relative_to(self.root).as_posix()
+
+        git_info = self._git_add_all_and_commit(
+            f"delete project {normalized_key}"
+        )
+
+        return {
+            "deleted": normalized_key,
+            "archived_to": archived_to,
+            "force_deleted": force and directory_exists,
+            "incoming_refs": incoming_refs,
+            "incoming_ref_count": len(incoming_refs),
+            "replaced_active_with": normalized_replace if is_active else None,
+            "brief": self.read_brief(),
             **git_info,
         }
 
@@ -1664,6 +1891,43 @@ class BrainVault:
                     log.info("committed archive, push pending")
             except Exception:
                 log.exception("background archive commit error")
+
+        threading.Thread(target=_bg, daemon=True).start()
+        info["git"] = "committed_push_pending"
+        return info
+
+    def _git_add_all_and_commit(self, message: str) -> dict[str, Any]:
+        """Stage all working-tree changes (``git add -A``) and commit.
+
+        Used when a directory is moved or deleted wholesale, making it
+        impractical to enumerate individual paths. Commit runs in a
+        background thread.
+        """
+        info: dict[str, Any] = {"git": "skipped"}
+
+        if not self._repo_url:
+            return info
+
+        def _bg() -> None:
+            try:
+                with self._git_lock:
+                    result = self._git("add", "-A")
+                    if result.returncode != 0:
+                        log.warning("git add -A failed: %s", result.stderr.strip())
+                        return
+
+                    result = self._git("commit", "-m", message)
+                    if result.returncode != 0:
+                        combined = (result.stdout + result.stderr).lower()
+                        if "nothing to commit" in combined:
+                            return
+                        log.warning("git commit failed: %s", result.stderr.strip() or result.stdout.strip())
+                        return
+
+                    self._has_unpushed = True
+                    log.info("committed (add -A), push pending")
+            except Exception:
+                log.exception("background add-all commit error")
 
         threading.Thread(target=_bg, daemon=True).start()
         info["git"] = "committed_push_pending"
