@@ -42,6 +42,7 @@ def vault_dir(tmp_path: Path) -> Path:
                 "name": "Test Project",
                 "dir": "testproject",
                 "summary": "A test project for unit tests.",
+                "repo": "example/test-project",
                 "stack": ["Python"],
                 "goals": {
                     "Test goal one": "A test goal for unit testing",
@@ -52,6 +53,7 @@ def vault_dir(tmp_path: Path) -> Path:
                 "name": "Other Project",
                 "dir": "otherproject",
                 "summary": "A secondary project for orientation tests.",
+                "repo": "example/other-project",
                 "stack": ["Python"],
                 "goals": {
                     "Other project goal": "A second project used for testing active-project changes",
@@ -210,7 +212,7 @@ def vault_dir(tmp_path: Path) -> Path:
     proj = tmp_path / "testproject"
     proj.mkdir()
     (tmp_path / "otherproject").mkdir()
-    for folder in ["concept", "goal", "system"]:
+    for folder in ["concept", "goal", "system", "template"]:
         (proj / folder).mkdir()
     for folder in ["lesson", "rule", "findings"]:
         (tmp_path / folder).mkdir()
@@ -312,6 +314,28 @@ def vault_dir(tmp_path: Path) -> Path:
         ## Related
 
         - [[Architecture Overview]]
+    """))
+
+    _write_entity(proj / "Test Project.md", {
+        "title": "Test Project",
+        "guid": "11111111-2222-3333-4444-555555555555",
+        "type": ["project"],
+        "status": "active",
+        "tags": ["core"],
+        "project": ["TestProject"],
+    }, textwrap.dedent("""\
+        # Test Project
+
+        A test project for unit tests.
+
+        ## Stack
+
+        Python
+
+        ## Goals
+
+        - [[Test goal one]] — A test goal for unit testing
+        - Test goal two — Another test goal
     """))
 
     # Root-scoped entities
@@ -462,6 +486,7 @@ class TestVaultReading:
         assert types["concept"]["count"] == 4  # Token Efficiency, Architecture Overview, YAML For Data, Open Question
         assert types["system"]["count"] == 1  # Storage Layer
         assert types["goal"]["count"] == 1
+        assert types["project"]["count"] == 1
 
     def test_read_entity_by_title(self, vault: BrainVault):
         entity = vault.read_entity("Token Efficiency")
@@ -1107,6 +1132,42 @@ class TestUpdateMemory:
 
 
 # ---------------------------------------------------------------------------
+# Integration tests: project registry
+# ---------------------------------------------------------------------------
+
+
+class TestProjectRegistry:
+    def test_list_projects(self, vault: BrainVault):
+        projects = vault.list_projects()
+
+        assert [project["key"] for project in projects] == [
+            "TestProject",
+            "OtherProject",
+        ]
+        assert projects[0]["active"] is True
+        assert projects[0]["entity_exists"] is True
+        assert projects[0]["entity_path"] == "testproject/Test Project.md"
+        assert projects[1]["entity_exists"] is False
+        assert any(
+            "project root entity is missing" in warning
+            for warning in projects[1]["warnings"]
+        )
+
+    def test_get_project(self, vault: BrainVault):
+        project = vault.get_project("TestProject")
+
+        assert project["name"] == "Test Project"
+        assert project["repo"] == "example/test-project"
+        assert project["goal_count"] == 2
+        assert project["goals"]["Test goal one"] == "A test goal for unit testing"
+        assert project["entity_title"] == "Test Project"
+
+    def test_get_project_missing(self, vault: BrainVault):
+        with pytest.raises(FileNotFoundError):
+            vault.get_project("MissingProject")
+
+
+# ---------------------------------------------------------------------------
 # Integration tests: update_brief
 # ---------------------------------------------------------------------------
 
@@ -1154,6 +1215,73 @@ class TestUpdateBrief:
             ValueError, match="must match an existing project key in brief.yml"
         ):
             vault.update_brief({"active-project": "MissingProject"})
+
+
+# ---------------------------------------------------------------------------
+# Integration tests: switch_project / create_project
+# ---------------------------------------------------------------------------
+
+
+class TestProjectManagement:
+    def test_switch_project(self, vault: BrainVault):
+        result = vault.switch_project("OtherProject", focus="Working in the other project")
+
+        assert result["switched_to"] == "OtherProject"
+        assert result["brief"]["active-project"] == "OtherProject"
+        assert result["brief"]["focus"] == "Working in the other project"
+        assert result["project"]["active"] is True
+
+        concepts = vault.query(entity_type="concept")
+        assert concepts
+        assert all(entry["relevance"] == "background" for entry in concepts)
+
+    def test_switch_project_missing(self, vault: BrainVault):
+        with pytest.raises(FileNotFoundError):
+            vault.switch_project("MissingProject")
+
+    def test_create_project_bootstrap(self, vault: BrainVault, vault_dir: Path):
+        result = vault.create_project(
+            project_key="BrandNewProject",
+            name="Brand New Project",
+            directory="brandnew",
+            summary="A brand new project for bootstrap testing.",
+            repo="example/brand-new-project",
+            stack=["Python", "MCP"],
+            goals={
+                "First bootstrap goal": "Validate the new project bootstrap flow",
+            },
+            make_active=True,
+            focus="Starting the brand new project",
+        )
+
+        assert result["created"] == "BrandNewProject"
+        assert result["project"]["active"] is True
+        assert result["project"]["entity_exists"] is True
+        assert result["brief"]["active-project"] == "BrandNewProject"
+        assert result["brief"]["focus"] == "Starting the brand new project"
+
+        project_dir = vault_dir / "brandnew"
+        assert project_dir.is_dir()
+        for folder in ["concept", "goal", "system", "template"]:
+            assert (project_dir / folder).is_dir()
+
+        project_entity = project_dir / "Brand New Project.md"
+        assert project_entity.exists()
+        goal_entity = project_dir / "goal" / "First bootstrap goal.md"
+        assert goal_entity.exists()
+
+        created_project = vault.get_project("BrandNewProject")
+        assert created_project["repo"] == "example/brand-new-project"
+        assert created_project["goal_titles"] == ["First bootstrap goal"]
+
+    def test_create_project_duplicate_key(self, vault: BrainVault):
+        with pytest.raises(FileExistsError):
+            vault.create_project(
+                project_key="TestProject",
+                name="Duplicate Project",
+                directory="duplicate-project",
+                summary="Should fail because the key already exists.",
+            )
 
 
 # ---------------------------------------------------------------------------

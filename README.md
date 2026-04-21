@@ -9,6 +9,8 @@ MCP server for **The Brain That Wouldn't Die** — persistent structured memory 
 | Tool | Purpose | Budget |
 |------|---------|--------|
 | `get_brief()` | L0 bootstrap: active project, goals, focus area, suggested next steps | ~300 tokens |
+| `list_projects()` | Inspect project registry entries with active state and health warnings | ~100–300 tokens |
+| `get_project(project_key)` | Inspect one project's registry entry, goals, and companion entity health | ~150–400 tokens |
 | `list_types()` | Type registry with descriptions and entity counts | ~200 tokens |
 
 ### Retrieval
@@ -33,6 +35,8 @@ MCP server for **The Brain That Wouldn't Die** — persistent structured memory 
 
 | Tool | Purpose |
 |------|---------|
+| `switch_project(project_key, focus?)` | Switch the active project and optionally update focus |
+| `create_project(project_key, name, directory, summary, ...)` | Bootstrap a new project registry entry, directory tree, project entity, and optional goal entities |
 | `update_brief(fields)` | Update `brief.yml` orientation state (`active-project`, `focus`) with YAML-aware validation |
 | `update_memory(entity_id, fields)` | Update entity YAML frontmatter with link validation |
 | `update_body(entity_id, field, content?)` | Update schema-defined markdown body sections without manual document formatting |

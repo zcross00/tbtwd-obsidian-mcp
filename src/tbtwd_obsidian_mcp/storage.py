@@ -67,6 +67,7 @@ class BrainVault:
 
     _PUSH_INTERVAL = 60  # seconds between batched pushes
     _EDITABLE_BRIEF_FIELDS = ("active-project", "focus")
+    _INVALID_FILENAME_CHARS = set('<>:"/\\|?*')
 
     def __init__(
         self,
@@ -250,16 +251,305 @@ class BrainVault:
 
     # -- brief.yml (L0) ----------------------------------------------------
 
+    def _brief_path(self) -> Path:
+        """Return the path to brief.yml."""
+        return self.root / "brief.yml"
+
+    def _read_brief_raw(self) -> dict[str, Any]:
+        """Load brief.yml without any derived fields."""
+        brief_path = self._brief_path()
+        if not brief_path.exists():
+            raise FileNotFoundError("brief.yml not found in vault root")
+        brief = yaml.safe_load(brief_path.read_text(encoding="utf-8")) or {}
+        if not isinstance(brief, dict):
+            raise ValueError("brief.yml must contain a YAML mapping at the root")
+        return brief
+
+    def _write_brief_raw(self, brief: dict[str, Any]) -> None:
+        """Persist the raw brief.yml mapping."""
+        brief_text = yaml.dump(brief, default_flow_style=False, sort_keys=False)
+        self._brief_path().write_text(brief_text, encoding="utf-8")
+
+    def _project_registry(
+        self, brief: dict[str, Any] | None = None
+    ) -> dict[str, dict[str, Any]]:
+        """Return the project registry from brief.yml."""
+        brief_data = self._read_brief_raw() if brief is None else brief
+        projects = brief_data.get("projects", {})
+        if not isinstance(projects, dict):
+            raise ValueError("brief.yml field 'projects' must be a mapping")
+        return projects
+
+    def _project_entry(
+        self, project_key: str, brief: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Return one project registry entry by key."""
+        projects = self._project_registry(brief)
+        if project_key not in projects:
+            raise FileNotFoundError(f"Project '{project_key}' not found in brief.yml")
+        entry = projects[project_key] or {}
+        if not isinstance(entry, dict):
+            raise ValueError(
+                f"brief.yml project '{project_key}' must be a mapping"
+            )
+        return entry
+
+    def _project_goals(
+        self, project_key: str, brief: dict[str, Any] | None = None
+    ) -> dict[str, str]:
+        """Return the per-project goal map from brief.yml."""
+        entry = self._project_entry(project_key, brief)
+        goals = entry.get("goals", {})
+        if goals is None:
+            return {}
+        if not isinstance(goals, dict):
+            raise ValueError(
+                f"brief.yml project '{project_key}' goals must be a mapping"
+            )
+        normalized: dict[str, str] = {}
+        for title, summary in goals.items():
+            normalized[str(title)] = "" if summary is None else str(summary)
+        return normalized
+
+    def _project_entity_path(
+        self, project_key: str, *, brief: dict[str, Any] | None = None
+    ) -> Path | None:
+        """Return the project root entity path for a project key, if present."""
+        brief_data = self._read_brief_raw() if brief is None else brief
+        entry = self._project_entry(project_key, brief_data)
+        directory = entry.get("dir")
+        name = entry.get("name")
+
+        if isinstance(directory, str) and directory and isinstance(name, str) and name:
+            expected = self.root / directory / f"{name}.md"
+            if expected.is_file():
+                return expected
+
+        for type_name, path in self._iter_entity_files():
+            if type_name != "project":
+                continue
+            text = path.read_text(encoding="utf-8")
+            fm, _ = _parse_frontmatter(text)
+            projects = fm.get("project", [])
+            if isinstance(projects, str):
+                projects = [projects]
+            if project_key in projects:
+                return path
+        return None
+
+    @classmethod
+    def _normalize_project_key(cls, project_key: str) -> str:
+        """Validate and normalize a project key."""
+        if not isinstance(project_key, str) or not project_key.strip():
+            raise ValueError("project_key must be a non-empty string")
+        normalized = project_key.strip()
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", normalized):
+            raise ValueError(
+                "project_key must start with a letter and contain only letters, numbers, underscores, or hyphens"
+            )
+        return normalized
+
+    @classmethod
+    def _normalize_required_text(cls, value: str, *, field_name: str) -> str:
+        """Validate a required text field."""
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{field_name} must be a non-empty string")
+        return value.strip()
+
+    @classmethod
+    def _normalize_filename_text(cls, value: str, *, field_name: str) -> str:
+        """Validate a required string that will be used in a vault file path."""
+        normalized = cls._normalize_required_text(value, field_name=field_name)
+        if any(ch in normalized for ch in cls._INVALID_FILENAME_CHARS):
+            raise ValueError(
+                f"{field_name} contains characters that are unsafe for vault file names"
+            )
+        return normalized
+
+    @classmethod
+    def _normalize_optional_text(
+        cls, value: str | None, *, field_name: str
+    ) -> str | None:
+        """Validate an optional string field."""
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError(f"{field_name} must be a string")
+        normalized = value.strip()
+        return normalized or None
+
+    @staticmethod
+    def _normalize_stack(stack: list[str] | None) -> list[str]:
+        """Validate and normalize a project stack list."""
+        if stack is None:
+            return []
+        if not isinstance(stack, list):
+            raise ValueError("stack must be a list of strings")
+        normalized: list[str] = []
+        for entry in stack:
+            if not isinstance(entry, str) or not entry.strip():
+                raise ValueError("stack entries must be non-empty strings")
+            value = entry.strip()
+            if value not in normalized:
+                normalized.append(value)
+        return normalized
+
+    @classmethod
+    def _normalize_goals(cls, goals: dict[str, str] | None) -> dict[str, str]:
+        """Validate and normalize a project goals map."""
+        if goals is None:
+            return {}
+        if not isinstance(goals, dict):
+            raise ValueError("goals must be a mapping of goal title to summary")
+        normalized: dict[str, str] = {}
+        for title, summary in goals.items():
+            goal_title = cls._normalize_filename_text(title, field_name="goal title")
+            if not isinstance(summary, str):
+                raise ValueError(
+                    f"goal '{goal_title}' summary must be a string"
+                )
+            normalized[goal_title] = summary.strip()
+        return normalized
+
+    def _project_type_folders(self) -> list[str]:
+        """Return folder names for all project-scoped entity types."""
+        folders: list[str] = []
+        for type_name, meta in self._load_types_config().items():
+            if meta.get("scope") != "project" or type_name == "project":
+                continue
+            folder = meta.get("folder") or type_name
+            if folder not in folders:
+                folders.append(folder)
+        return folders
+
+    def _project_summary(
+        self, project_key: str, *, brief: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Return a shaped project registry record for agent consumption."""
+        brief_data = self._read_brief_raw() if brief is None else brief
+        project_key = self._normalize_project_key(project_key)
+        entry = self._project_entry(project_key, brief_data)
+        goals = self._project_goals(project_key, brief_data)
+
+        directory = entry.get("dir")
+        directory_path = self.root / directory if isinstance(directory, str) and directory else None
+        expected_entity_path = None
+        if directory_path and isinstance(entry.get("name"), str) and entry["name"]:
+            expected_entity_path = directory_path / f"{entry['name']}.md"
+        entity_path = self._project_entity_path(project_key, brief=brief_data)
+
+        entity_title = None
+        entity_status = None
+        if entity_path is not None:
+            text = entity_path.read_text(encoding="utf-8")
+            fm, _ = _parse_frontmatter(text)
+            entity_title = fm.get("title", entity_path.stem)
+            entity_status = fm.get("status")
+
+        warnings: list[str] = []
+        directory_exists = bool(directory_path and directory_path.is_dir())
+        if not isinstance(directory, str) or not directory:
+            warnings.append("project directory is missing from brief.yml")
+        elif directory_path is not None and not directory_path.exists():
+            warnings.append(f"project directory '{directory}' does not exist")
+        elif directory_path is not None and not directory_path.is_dir():
+            warnings.append(f"project path '{directory}' is not a directory")
+
+        if entity_path is None:
+            warnings.append("project root entity is missing")
+
+        return {
+            "key": project_key,
+            "name": entry.get("name", project_key),
+            "dir": directory,
+            "summary": entry.get("summary", ""),
+            "repo": entry.get("repo"),
+            "stack": entry.get("stack", []),
+            "goals": goals,
+            "goal_count": len(goals),
+            "goal_titles": list(goals.keys()),
+            "active": brief_data.get("active-project") == project_key,
+            "directory_exists": directory_exists,
+            "entity_exists": entity_path is not None,
+            "entity_path": (
+                entity_path.relative_to(self.root).as_posix()
+                if entity_path
+                else None
+            ),
+            "expected_entity_path": (
+                expected_entity_path.relative_to(self.root).as_posix()
+                if expected_entity_path is not None
+                else None
+            ),
+            "entity_title": entity_title,
+            "entity_status": entity_status,
+            "warnings": warnings,
+        }
+
+    def _render_project_entity(
+        self,
+        *,
+        project_key: str,
+        name: str,
+        summary: str,
+        stack: list[str],
+        goals: dict[str, str],
+    ) -> str:
+        """Render a new project root entity file."""
+        fm: dict[str, Any] = {
+            "title": name,
+            "guid": str(uuid.uuid4()),
+            "type": ["project"],
+            "status": "active",
+            "tags": ["core"],
+            "project": [project_key],
+        }
+
+        body_lines = [f"# {name}", "", summary]
+        if stack:
+            body_lines.extend(["", "## Stack", "", ", ".join(stack)])
+        if goals:
+            body_lines.extend(["", "## Goals", ""])
+            for goal_title, goal_summary in goals.items():
+                line = f"- [[{goal_title}]]"
+                if goal_summary:
+                    line += f" — {goal_summary}"
+                body_lines.append(line)
+
+        return _serialize_frontmatter(fm, "\n".join(body_lines) + "\n")
+
+    def _render_goal_entity(
+        self,
+        *,
+        project_key: str,
+        project_name: str,
+        title: str,
+        summary: str,
+    ) -> str:
+        """Render a new goal entity file for project bootstrap."""
+        fm: dict[str, Any] = {
+            "title": title,
+            "guid": str(uuid.uuid4()),
+            "type": ["goal"],
+            "status": "active",
+            "tags": ["core"],
+            "project": [project_key],
+        }
+
+        body_lines = [f"# {title}", ""]
+        if summary:
+            body_lines.append(f"- {summary}")
+            body_lines.append("")
+        body_lines.extend(["## Related", "", f"- [[{project_name}]]", ""])
+        return _serialize_frontmatter(fm, "\n".join(body_lines))
+
     def read_brief(self) -> dict[str, Any]:
         """Return the parsed contents of brief.yml with task-dispatch hints.
 
         Enriches the raw brief with 'next_steps' — suggested tool calls
         based on the current focus area and active project.
         """
-        brief_path = self.root / "brief.yml"
-        if not brief_path.exists():
-            raise FileNotFoundError("brief.yml not found in vault root")
-        brief = yaml.safe_load(brief_path.read_text(encoding="utf-8")) or {}
+        brief = self._read_brief_raw()
 
         # Strategy 6: Generate context-aware next steps from focus area
         focus = brief.get("focus", "")
@@ -309,12 +599,8 @@ class BrainVault:
                 f"Allowed fields: {allowed}"
             )
 
-        brief_path = self.root / "brief.yml"
-        if not brief_path.exists():
-            raise FileNotFoundError("brief.yml not found in vault root")
-
-        brief = yaml.safe_load(brief_path.read_text(encoding="utf-8")) or {}
-        projects = brief.get("projects", {})
+        brief = self._read_brief_raw()
+        projects = self._project_registry(brief)
         normalized_fields: dict[str, Any] = {}
 
         for name, value in fields.items():
@@ -347,10 +633,8 @@ class BrainVault:
                 "message": "No brief changes applied",
             }
 
-        brief_text = yaml.dump(
-            brief, default_flow_style=False, sort_keys=False
-        )
-        brief_path.write_text(brief_text, encoding="utf-8")
+        brief_path = self._brief_path()
+        self._write_brief_raw(brief)
 
         git_info = self._commit_and_push(
             brief_path, f"update brief: {', '.join(changed_fields)}"
@@ -362,10 +646,179 @@ class BrainVault:
             **git_info,
         }
 
+    def list_projects(self) -> list[dict[str, Any]]:
+        """Return shaped project registry entries for all projects."""
+        brief = self._read_brief_raw()
+        projects = [
+            self._project_summary(project_key, brief=brief)
+            for project_key in self._project_registry(brief)
+        ]
+        projects.sort(key=lambda item: (not item["active"], item["name"].lower()))
+        return projects
+
+    def get_project(self, project_key: str) -> dict[str, Any]:
+        """Return a single shaped project registry entry."""
+        return self._project_summary(project_key)
+
+    def switch_project(
+        self, project_key: str, *, focus: str | None = None
+    ) -> dict[str, Any]:
+        """Switch the active project and optionally update the focus."""
+        normalized_key = self._normalize_project_key(project_key)
+        self._project_entry(normalized_key)
+        fields: dict[str, Any] = {"active-project": normalized_key}
+        if focus is not None:
+            if not isinstance(focus, str):
+                raise ValueError("focus must be a string")
+            fields["focus"] = focus
+
+        result = self.update_brief(fields)
+        result["switched_to"] = normalized_key
+        result["project"] = self.get_project(normalized_key)
+        return result
+
+    def create_project(
+        self,
+        *,
+        project_key: str,
+        name: str,
+        directory: str,
+        summary: str,
+        repo: str | None = None,
+        stack: list[str] | None = None,
+        goals: dict[str, str] | None = None,
+        make_active: bool = False,
+        focus: str | None = None,
+    ) -> dict[str, Any]:
+        """Bootstrap a new project in brief.yml and the vault directory tree."""
+        normalized_key = self._normalize_project_key(project_key)
+        normalized_name = self._normalize_filename_text(name, field_name="name")
+        normalized_summary = self._normalize_required_text(
+            summary, field_name="summary"
+        )
+        normalized_directory = self._normalize_filename_text(
+            directory, field_name="directory"
+        )
+        normalized_repo = self._normalize_optional_text(repo, field_name="repo")
+        normalized_stack = self._normalize_stack(stack)
+        normalized_goals = self._normalize_goals(goals)
+
+        if focus is not None and not make_active:
+            raise ValueError("focus can only be set when make_active is true")
+
+        if Path(normalized_directory).name != normalized_directory or any(
+            sep in normalized_directory for sep in ("/", "\\")
+        ):
+            raise ValueError(
+                "directory must be a single relative path segment with no slashes"
+            )
+        if normalized_directory.startswith("."):
+            raise ValueError("directory cannot start with '.'")
+
+        brief = self._read_brief_raw()
+        projects = self._project_registry(brief)
+        brief.setdefault("projects", {})
+        if normalized_key in projects:
+            raise FileExistsError(
+                f"Project '{normalized_key}' already exists in brief.yml"
+            )
+
+        if (self.root / normalized_directory).exists():
+            raise FileExistsError(
+                f"Vault path '{normalized_directory}' already exists"
+            )
+
+        for existing_key in projects:
+            existing = self._project_entry(existing_key, brief)
+            if existing.get("name") == normalized_name:
+                raise FileExistsError(
+                    f"Project name '{normalized_name}' is already in use"
+                )
+            if existing.get("dir") == normalized_directory:
+                raise FileExistsError(
+                    f"Project directory '{normalized_directory}' is already in use"
+                )
+
+        brief["projects"][normalized_key] = {
+            "name": normalized_name,
+            "dir": normalized_directory,
+            "summary": normalized_summary,
+            "stack": normalized_stack,
+            "goals": normalized_goals,
+        }
+        if normalized_repo is not None:
+            brief["projects"][normalized_key]["repo"] = normalized_repo
+        if make_active:
+            brief["active-project"] = normalized_key
+        if focus is not None:
+            brief["focus"] = focus.strip()
+
+        project_dir = self.root / normalized_directory
+        created_paths: list[Path] = []
+        project_file_text = self._render_project_entity(
+            project_key=normalized_key,
+            name=normalized_name,
+            summary=normalized_summary,
+            stack=normalized_stack,
+            goals=normalized_goals,
+        )
+        goal_texts: list[tuple[Path, str]] = []
+        for goal_title, goal_summary in normalized_goals.items():
+            goal_path = project_dir / "goal" / f"{goal_title}.md"
+            goal_texts.append(
+                (
+                    goal_path,
+                    self._render_goal_entity(
+                        project_key=normalized_key,
+                        project_name=normalized_name,
+                        title=goal_title,
+                        summary=goal_summary,
+                    ),
+                )
+            )
+
+        project_dir.mkdir(parents=True, exist_ok=False)
+        for folder in self._project_type_folders():
+            (project_dir / folder).mkdir(parents=True, exist_ok=True)
+
+        brief_path = self._brief_path()
+        self._write_brief_raw(brief)
+        created_paths.append(brief_path)
+
+        project_entity_path = project_dir / f"{normalized_name}.md"
+        project_entity_path.write_text(project_file_text, encoding="utf-8")
+        created_paths.append(project_entity_path)
+
+        for goal_path, goal_text in goal_texts:
+            goal_path.write_text(goal_text, encoding="utf-8")
+            created_paths.append(goal_path)
+
+        warnings: list[str] = []
+        for path in created_paths[1:]:
+            text = path.read_text(encoding="utf-8")
+            for warning in self._validate_links(text):
+                warnings.append(f"{path.relative_to(self.root)}: {warning}")
+
+        git_info = self._commit_and_push_batch(
+            created_paths,
+            f"create project {normalized_key}: {normalized_name}",
+        )
+
+        return {
+            "created": normalized_key,
+            "project": self.get_project(normalized_key),
+            "brief": self.read_brief(),
+            "created_paths": [
+                path.relative_to(self.root).as_posix() for path in created_paths[1:]
+            ],
+            "warnings": warnings,
+            **git_info,
+        }
+
     def _active_project(self) -> str | None:
         """Return the active-project from brief.yml, or None."""
         try:
-            brief = self.read_brief()
+            brief = self._read_brief_raw()
         except FileNotFoundError:
             return None
         return brief.get("active-project")
@@ -412,11 +865,7 @@ class BrainVault:
     def _project_dirs(self) -> dict[str, Path]:
         """Return {project_key: directory_path} from brief.yml 'dir' fields."""
         try:
-            brief_path = self.root / "brief.yml"
-            if not brief_path.exists():
-                return {}
-            brief = yaml.safe_load(brief_path.read_text(encoding="utf-8")) or {}
-            projects = brief.get("projects", {})
+            projects = self._project_registry()
             result: dict[str, Path] = {}
             for proj_key, proj_meta in projects.items():
                 dir_name = proj_meta.get("dir")

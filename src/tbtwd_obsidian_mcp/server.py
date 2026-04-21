@@ -37,6 +37,8 @@ focus area, backlog, AND suggested next tool calls — your L0 orientation conte
 Follow the next_steps list to load relevant context before acting.
 
 READING:
+- list_projects: inspect the project registry with active state and health warnings.
+- get_project: inspect one project's registry entry, companion entity path, and goals.
 - list_types: discover entity categories (project, concept, goal, system, template, procedure, lesson, rule) with counts.
 - query: find entities by entity_type, status, tag, or project. Results sorted by project relevance.
 - search: find entities by keyword across titles and body text. Use when you don't know the exact tag.
@@ -68,6 +70,8 @@ AUDIT TRAIL:
 - After significant choices, persist the rationale using the synthesis pipeline.
 
 WRITING:
+- switch_project: set the active project and optionally update focus for the current session orientation.
+- create_project: bootstrap a new project entry in brief.yml plus its directory tree and companion project entity.
 - update_brief: update brief.yml orientation state (currently active-project and focus). Auto-validates YAML-safe fields, commits, and pushes.
 - update_memory: update an entity's YAML frontmatter. Auto-validates links, commits, and pushes to GitHub.
 - update_body: update or create a named section in an entity's markdown body. Replaces existing \
@@ -189,6 +193,26 @@ def update_brief(fields: dict) -> str:
 
 
 @mcp.tool()
+def list_projects() -> str:
+    """Return shaped project registry entries from brief.yml.
+
+    Includes active status, directory and project-entity health, and
+    goal summaries so agents can choose a project before switching.
+    """
+    vault = _get_vault()
+    result = vault.list_projects()
+    return json.dumps(result, indent=2, default=str)
+
+
+@mcp.tool()
+def get_project(project_key: str) -> str:
+    """Return one project registry entry with health and companion entity info."""
+    vault = _get_vault()
+    result = vault.get_project(project_key)
+    return json.dumps(result, indent=2, default=str)
+
+
+@mcp.tool()
 def list_types() -> str:
     """Return the type registry with descriptions and entity counts.
 
@@ -288,6 +312,46 @@ def update_memory(entity_id: str, fields: dict) -> str:
     """
     vault = _get_vault()
     result = vault.update_memory(entity_id, fields)
+    return json.dumps(result, indent=2, default=str)
+
+
+@mcp.tool()
+def switch_project(project_key: str, focus: str | None = None) -> str:
+    """Switch the active project and optionally update the current focus."""
+    vault = _get_vault()
+    result = vault.switch_project(project_key, focus=focus)
+    return json.dumps(result, indent=2, default=str)
+
+
+@mcp.tool()
+def create_project(
+    project_key: str,
+    name: str,
+    directory: str,
+    summary: str,
+    repo: str | None = None,
+    stack: list[str] | None = None,
+    goals: dict[str, str] | None = None,
+    make_active: bool = False,
+    focus: str | None = None,
+) -> str:
+    """Bootstrap a new project in brief.yml plus its vault directory tree.
+
+    Creates the project registry entry, project-scoped type folders,
+    a companion project root entity, and optional goal entities.
+    """
+    vault = _get_vault()
+    result = vault.create_project(
+        project_key=project_key,
+        name=name,
+        directory=directory,
+        summary=summary,
+        repo=repo,
+        stack=stack,
+        goals=goals,
+        make_active=make_active,
+        focus=focus,
+    )
     return json.dumps(result, indent=2, default=str)
 
 
