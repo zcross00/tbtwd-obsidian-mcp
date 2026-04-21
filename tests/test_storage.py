@@ -48,6 +48,15 @@ def vault_dir(tmp_path: Path) -> Path:
                     "Test goal two": "Another test goal",
                 },
             },
+            "OtherProject": {
+                "name": "Other Project",
+                "dir": "otherproject",
+                "summary": "A secondary project for orientation tests.",
+                "stack": ["Python"],
+                "goals": {
+                    "Other project goal": "A second project used for testing active-project changes",
+                },
+            },
         },
         "focus": "Testing the vault",
     }
@@ -200,6 +209,7 @@ def vault_dir(tmp_path: Path) -> Path:
     # - lesson/, rule/, findings/ for root-scoped types
     proj = tmp_path / "testproject"
     proj.mkdir()
+    (tmp_path / "otherproject").mkdir()
     for folder in ["concept", "goal", "system"]:
         (proj / folder).mkdir()
     for folder in ["lesson", "rule", "findings"]:
@@ -1094,6 +1104,56 @@ class TestUpdateMemory:
             "serves": ["[[Nonexistent Target]]"],
         })
         assert any("not found" in w for w in result["warnings"])
+
+
+# ---------------------------------------------------------------------------
+# Integration tests: update_brief
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateBrief:
+    def test_update_focus(self, vault: BrainVault, vault_dir: Path):
+        result = vault.update_brief({"focus": "Planning brief synchronization"})
+
+        assert result["updated"] == ["focus"]
+        assert result["brief"]["focus"] == "Planning brief synchronization"
+        assert result["brief"]["next_steps"][0].startswith(
+            'search(text="Planning brief synchronization")'
+        )
+
+        brief_text = (vault_dir / "brief.yml").read_text(encoding="utf-8")
+        assert not brief_text.startswith("---")
+        assert yaml.safe_load(brief_text)["focus"] == "Planning brief synchronization"
+
+    def test_clear_focus(self, vault: BrainVault):
+        result = vault.update_brief({"focus": ""})
+
+        assert result["updated"] == ["focus"]
+        assert result["brief"]["focus"] == ""
+        assert all(
+            not step.startswith('search(text="')
+            for step in result["brief"]["next_steps"]
+        )
+
+    def test_update_active_project_changes_query_relevance(self, vault: BrainVault):
+        result = vault.update_brief({"active-project": "OtherProject"})
+
+        assert result["updated"] == ["active-project"]
+        assert result["brief"]["active-project"] == "OtherProject"
+
+        concepts = vault.query(entity_type="concept")
+        assert concepts
+        assert all(entry["relevance"] == "background" for entry in concepts)
+
+    def test_update_brief_rejects_unknown_field(self, vault: BrainVault):
+        with pytest.raises(ValueError, match="Unknown brief fields"):
+            vault.update_brief({"projects": {}})
+
+    def test_update_brief_rejects_invalid_active_project(self, vault: BrainVault):
+        with pytest.raises(
+            ValueError, match="must match an existing project key in brief.yml"
+        ):
+            vault.update_brief({"active-project": "MissingProject"})
 
 
 # ---------------------------------------------------------------------------

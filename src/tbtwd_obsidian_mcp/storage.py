@@ -66,6 +66,7 @@ class BrainVault:
     _CACHE_ROOT = Path.home() / ".cache" / "tbtwd-brain"
 
     _PUSH_INTERVAL = 60  # seconds between batched pushes
+    _EDITABLE_BRIEF_FIELDS = ("active-project", "focus")
 
     def __init__(
         self,
@@ -287,6 +288,79 @@ class BrainVault:
 
         brief["next_steps"] = next_steps
         return brief
+
+    def update_brief(self, fields: dict[str, Any]) -> dict[str, Any]:
+        """Update supported fields in brief.yml and return the refreshed brief.
+
+        Only orientation fields are writable through this path. Structural brief
+        configuration such as project definitions remains read-only until a
+        dedicated config-editing tool exists for it.
+        """
+        if not fields:
+            raise ValueError("fields must contain at least one brief field")
+
+        unknown_fields = [
+            name for name in fields if name not in self._EDITABLE_BRIEF_FIELDS
+        ]
+        if unknown_fields:
+            allowed = ", ".join(self._EDITABLE_BRIEF_FIELDS)
+            raise ValueError(
+                f"Unknown brief fields: {', '.join(unknown_fields)}. "
+                f"Allowed fields: {allowed}"
+            )
+
+        brief_path = self.root / "brief.yml"
+        if not brief_path.exists():
+            raise FileNotFoundError("brief.yml not found in vault root")
+
+        brief = yaml.safe_load(brief_path.read_text(encoding="utf-8")) or {}
+        projects = brief.get("projects", {})
+        normalized_fields: dict[str, Any] = {}
+
+        for name, value in fields.items():
+            if name == "active-project":
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError("'active-project' must be a non-empty string")
+                if value not in projects:
+                    available = ", ".join(sorted(projects)) or "(none)"
+                    raise ValueError(
+                        "'active-project' must match an existing project key in brief.yml. "
+                        f"Available projects: {available}"
+                    )
+                normalized_fields[name] = value
+            elif name == "focus":
+                if not isinstance(value, str):
+                    raise ValueError("'focus' must be a string")
+                normalized_fields[name] = value.strip()
+
+        changed_fields: list[str] = []
+        for name, value in normalized_fields.items():
+            if brief.get(name) != value:
+                brief[name] = value
+                changed_fields.append(name)
+
+        if not changed_fields:
+            return {
+                "updated": [],
+                "brief": self.read_brief(),
+                "git": "skipped",
+                "message": "No brief changes applied",
+            }
+
+        brief_text = yaml.dump(
+            brief, default_flow_style=False, sort_keys=False
+        )
+        brief_path.write_text(brief_text, encoding="utf-8")
+
+        git_info = self._commit_and_push(
+            brief_path, f"update brief: {', '.join(changed_fields)}"
+        )
+
+        return {
+            "updated": changed_fields,
+            "brief": self.read_brief(),
+            **git_info,
+        }
 
     def _active_project(self) -> str | None:
         """Return the active-project from brief.yml, or None."""

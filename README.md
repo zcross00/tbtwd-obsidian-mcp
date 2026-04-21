@@ -2,7 +2,7 @@
 
 MCP server for **The Brain That Wouldn't Die** — persistent structured memory for AI agents, exposed via the Model Context Protocol over an Obsidian-style markdown vault.
 
-## Tools (13)
+## Core Tools
 
 ### Orientation
 
@@ -33,7 +33,9 @@ MCP server for **The Brain That Wouldn't Die** — persistent structured memory 
 
 | Tool | Purpose |
 |------|---------|
+| `update_brief(fields)` | Update `brief.yml` orientation state (`active-project`, `focus`) with YAML-aware validation |
 | `update_memory(entity_id, fields)` | Update entity YAML frontmatter with link validation |
+| `update_body(entity_id, field, content?)` | Update schema-defined markdown body sections without manual document formatting |
 
 ### Validation
 

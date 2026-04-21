@@ -68,6 +68,7 @@ AUDIT TRAIL:
 - After significant choices, persist the rationale using the synthesis pipeline.
 
 WRITING:
+- update_brief: update brief.yml orientation state (currently active-project and focus). Auto-validates YAML-safe fields, commits, and pushes.
 - update_memory: update an entity's YAML frontmatter. Auto-validates links, commits, and pushes to GitHub.
 - update_body: update or create a named section in an entity's markdown body. Replaces existing \
 sections or inserts new ones. Auto-validates links, commits, and pushes.
@@ -168,6 +169,23 @@ def get_brief() -> str:
     vault = _get_vault()
     brief = vault.read_brief()
     return json.dumps(brief, indent=2, default=str)
+
+
+@mcp.tool()
+def update_brief(fields: dict) -> str:
+    """Update supported fields in brief.yml.
+
+    Args:
+        fields: Dictionary of brief fields to update.
+            Supported keys:
+            - active-project: must match an existing project key in brief.yml
+            - focus: current focus area string (use an empty string to clear)
+
+    Returns confirmation with updated field names and the refreshed brief payload.
+    """
+    vault = _get_vault()
+    result = vault.update_brief(fields)
+    return json.dumps(result, indent=2, default=str)
 
 
 @mcp.tool()
