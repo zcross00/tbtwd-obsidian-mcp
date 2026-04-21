@@ -184,6 +184,26 @@ def list_types() -> str:
 
 
 @mcp.tool()
+def get_stats() -> str:
+    """Return vault health and growth metrics.
+
+    Provides entity counts by type and project, link density, and
+    schema compliance indicators. Use at session end to measure
+    vault growth, or periodically for health checks.
+
+    Returns:
+    - total_entities: overall count
+    - by_type: counts per entity type
+    - by_project: counts per project
+    - by_type_and_project: breakdown per project per type
+    - link_density: average outgoing links per entity, entities with zero links
+    - schema_compliance: entities with orphan (non-schema) sections
+    """
+    vault = _get_vault()
+    stats = vault.get_stats()
+    return json.dumps(stats, indent=2, default=str)
+
+@mcp.tool()
 def get_context(entity_id: str, include_archived: bool = False) -> str:
     """Return the full entity for the given ID plus one-level-deep linked synopses.
 
@@ -328,6 +348,25 @@ def check_links() -> str:
 
 
 @mcp.tool()
+def check_consistency() -> str:
+    """Check the vault for structural inconsistencies beyond broken links.
+
+    Runs multiple checks:
+    - Missing required frontmatter fields per types.yml
+    - Tags not in the controlled vocabulary (tags.yml)
+    - Broken serves/depends-on frontmatter references
+    - Duplicated entity titles (potential merge candidates)
+
+    Use periodically for vault hygiene alongside check_links().
+    """
+    vault = _get_vault()
+    report = vault.check_consistency()
+    if report["total_issues"] == 0:
+        return json.dumps({"status": "ok", "message": "No consistency issues found"})
+    return json.dumps(report, indent=2, default=str)
+
+
+@mcp.tool()
 def search(
     text: str,
     entity_type: str | None = None,
@@ -466,6 +505,25 @@ def get_relevant_context(
         topic, max_entities=max_entities, include_types=include_types
     )
     return json.dumps(results, indent=2, default=str)
+
+
+@mcp.tool()
+def clean_body(entity_id: str) -> str:
+    """Remove non-schema sections from an entity's body.
+
+    Use during vault hygiene to strip orphaned ``## Heading`` sections
+    that don't correspond to any field in the entity type's body schema.
+    Preserves the H1 title, preamble, and all schema-defined sections.
+
+    Args:
+        entity_id: Entity identifier — a filename slug, path, frontmatter ID,
+            or GUID.
+
+    Returns confirmation with list of removed headings.
+    """
+    vault = _get_vault()
+    result = vault.clean_body(entity_id)
+    return json.dumps(result, indent=2, default=str)
 
 
 @mcp.tool()

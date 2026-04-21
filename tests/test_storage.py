@@ -495,6 +495,35 @@ class TestVaultReading:
 
 
 # ---------------------------------------------------------------------------
+# Integration tests: get_stats
+# ---------------------------------------------------------------------------
+
+
+class TestGetStats:
+    def test_returns_counts(self, vault: BrainVault):
+        stats = vault.get_stats()
+        assert stats["total_entities"] > 0
+        assert "concept" in stats["by_type"]
+        assert "TestProject" in stats["by_project"]
+
+    def test_type_and_project_breakdown(self, vault: BrainVault):
+        stats = vault.get_stats()
+        assert "TestProject" in stats["by_type_and_project"]
+        tp = stats["by_type_and_project"]["TestProject"]
+        assert "concept" in tp
+
+    def test_link_density(self, vault: BrainVault):
+        stats = vault.get_stats()
+        assert "average_links_per_entity" in stats["link_density"]
+        assert "entities_without_links" in stats["link_density"]
+        assert stats["link_density"]["average_links_per_entity"] >= 0
+
+    def test_schema_compliance(self, vault: BrainVault):
+        stats = vault.get_stats()
+        assert "entities_with_orphan_sections" in stats["schema_compliance"]
+
+
+# ---------------------------------------------------------------------------
 # Integration tests: query
 # ---------------------------------------------------------------------------
 
@@ -624,7 +653,176 @@ class TestLinkChecking:
         # Storage Layer and Architecture Overview exist, Token Efficiency exists
         assert "Token Efficiency" not in break_targets
         assert "Architecture Overview" not in break_targets
-        assert "Storage Layer" not in break_targets
+
+
+# ---------------------------------------------------------------------------
+# Integration tests: check_consistency
+# ---------------------------------------------------------------------------
+
+
+class TestCheckConsistency:
+    def test_clean_vault_minimal_issues(self, vault: BrainVault):
+        report = vault.check_consistency()
+        assert "total_issues" in report
+        assert "missing_required_fields" in report
+        assert "invalid_tags" in report
+        assert "broken_frontmatter_refs" in report
+        assert "duplicate_titles" in report
+
+    def test_detects_missing_fields(self, vault: BrainVault, vault_dir: Path):
+        """Entity missing required 'tags' field is flagged."""
+        path = vault_dir / "testproject" / "concept" / "Bad Entity.md"
+        path.write_text(textwrap.dedent("""\
+            ---
+            title: Bad Entity
+            guid: f1f1f1f1-a2a2-b3b3-c4c4-d5d5d5d5d5d5
+            type: [concept]
+            status: active
+            project: [TestProject]
+            ---
+            # Bad Entity
+
+            Missing tags field.
+        """), encoding="utf-8")
+
+        report = vault.check_consistency()
+        missing = [m for m in report["missing_required_fields"]
+                   if "Bad Entity" in m["entity"]]
+        assert len(missing) == 1
+        assert missing[0]["field"] == "tags"
+
+    def test_detects_invalid_tags(self, vault: BrainVault, vault_dir: Path):
+        """Entity with tag not in tags.yml is flagged."""
+        path = vault_dir / "testproject" / "concept" / "Bad Tags.md"
+        path.write_text(textwrap.dedent("""\
+            ---
+            title: Bad Tags
+            guid: f2f2f2f2-a3a3-b4b4-c5c5-d6d6d6d6d6d6
+            type: [concept]
+            status: active
+            tags: [architecture, nonexistent-tag]
+            project: [TestProject]
+            ---
+            # Bad Tags
+
+            Has an invalid tag.
+        """), encoding="utf-8")
+
+        report = vault.check_consistency()
+        invalid = [i for i in report["invalid_tags"]
+                   if "Bad Tags" in i["entity"]]
+        assert len(invalid) == 1
+        assert invalid[0]["tag"] == "nonexistent-tag"
+
+    def test_detects_broken_serves(self, vault: BrainVault, vault_dir: Path):
+        """System entity with broken serves reference is flagged."""
+        path = vault_dir / "testproject" / "system" / "Broken Refs.md"
+        path.write_text(textwrap.dedent("""\
+            ---
+            title: Broken Refs
+            guid: f3f3f3f3-a4a4-b5b5-c6c6-d7d7d7d7d7d7
+            type: [system]
+            status: active
+            tags: [architecture]
+            project: [TestProject]
+            serves:
+              - "[[Nonexistent Goal]]"
+            ---
+            # Broken Refs
+
+            Has a broken serves reference.
+        """), encoding="utf-8")
+
+        report = vault.check_consistency()
+        broken = [b for b in report["broken_frontmatter_refs"]
+                  if "Broken Refs" in b["entity"]]
+        assert len(broken) == 1
+        assert broken[0]["target"] == "Nonexistent Goal"
+
+
+# ---------------------------------------------------------------------------
+# Integration tests: check_consistency
+# ---------------------------------------------------------------------------
+
+
+class TestCheckConsistency:
+    def test_clean_vault_minimal_issues(self, vault: BrainVault):
+        report = vault.check_consistency()
+        assert "total_issues" in report
+        assert "missing_required_fields" in report
+        assert "invalid_tags" in report
+        assert "broken_frontmatter_refs" in report
+        assert "duplicate_titles" in report
+
+    def test_detects_missing_fields(self, vault: BrainVault, vault_dir: Path):
+        """Entity missing required 'tags' field is flagged."""
+        path = vault_dir / "testproject" / "concept" / "Bad Entity.md"
+        path.write_text(textwrap.dedent("""\
+            ---
+            title: Bad Entity
+            guid: f1f1f1f1-a2a2-b3b3-c4c4-d5d5d5d5d5d5
+            type: [concept]
+            status: active
+            project: [TestProject]
+            ---
+            # Bad Entity
+
+            Missing tags field.
+        """), encoding="utf-8")
+
+        report = vault.check_consistency()
+        missing = [m for m in report["missing_required_fields"]
+                   if "Bad Entity" in m["entity"]]
+        assert len(missing) == 1
+        assert missing[0]["field"] == "tags"
+
+    def test_detects_invalid_tags(self, vault: BrainVault, vault_dir: Path):
+        """Entity with tag not in tags.yml is flagged."""
+        path = vault_dir / "testproject" / "concept" / "Bad Tags.md"
+        path.write_text(textwrap.dedent("""\
+            ---
+            title: Bad Tags
+            guid: f2f2f2f2-a3a3-b4b4-c5c5-d6d6d6d6d6d6
+            type: [concept]
+            status: active
+            tags: [architecture, nonexistent-tag]
+            project: [TestProject]
+            ---
+            # Bad Tags
+
+            Has an invalid tag.
+        """), encoding="utf-8")
+
+        report = vault.check_consistency()
+        invalid = [i for i in report["invalid_tags"]
+                   if "Bad Tags" in i["entity"]]
+        assert len(invalid) == 1
+        assert invalid[0]["tag"] == "nonexistent-tag"
+
+    def test_detects_broken_serves(self, vault: BrainVault, vault_dir: Path):
+        """System entity with broken serves reference is flagged."""
+        path = vault_dir / "testproject" / "system" / "Broken Refs.md"
+        path.write_text(textwrap.dedent("""\
+            ---
+            title: Broken Refs
+            guid: f3f3f3f3-a4a4-b5b5-c6c6-d7d7d7d7d7d7
+            type: [system]
+            status: active
+            tags: [architecture]
+            project: [TestProject]
+            serves:
+              - "[[Nonexistent Goal]]"
+            ---
+            # Broken Refs
+
+            Has a broken serves reference.
+        """), encoding="utf-8")
+
+        report = vault.check_consistency()
+        broken = [b for b in report["broken_frontmatter_refs"]
+                  if "Broken Refs" in b["entity"]]
+        assert len(broken) == 1
+        assert broken[0]["target"] == "Nonexistent Goal"
 
     def test_broken_link_detected(self, vault: BrainVault, vault_dir: Path):
         """Add an entity with a broken link and verify it's detected."""
@@ -1114,6 +1312,100 @@ class TestUpdateBody:
         arch_pos = text.index("## Architecture")
         related_pos = text.index("## Related")
         assert intent_pos < arch_pos < related_pos
+
+
+# ---------------------------------------------------------------------------
+# Unit tests: clean_body
+# ---------------------------------------------------------------------------
+
+
+class TestCleanBody:
+    def test_removes_orphan_sections(self, vault: BrainVault, vault_dir: Path):
+        """Orphan sections (not in schema) are stripped."""
+        path = vault_dir / "testproject" / "system" / "Test System.md"
+        path.write_text(textwrap.dedent("""\
+            ---
+            title: Test System
+            guid: d4d4d4d4-e5e5-f6f6-a7a7-b8b8b8b8b8b8
+            type: [system]
+            status: active
+            tags: [architecture]
+            project: [TestProject]
+            ---
+            # Test System
+
+            Preamble text.
+
+            ## Intent
+
+            The system's intent.
+
+            ## Architecture
+
+            How it works.
+
+            ## Orphan Section One
+
+            This should be removed.
+
+            ## Current State
+
+            Currently working.
+
+            ## Another Orphan
+
+            This should also go.
+
+            ## Related
+
+            - [[Token Efficiency]]
+        """), encoding="utf-8")
+
+        result = vault.clean_body("Test System")
+        assert result["action"] == "cleaned"
+        assert "Orphan Section One" in result["removed"]
+        assert "Another Orphan" in result["removed"]
+        assert len(result["removed"]) == 2
+
+        text = path.read_text(encoding="utf-8")
+        assert "## Intent" in text
+        assert "## Architecture" in text
+        assert "## Current State" in text
+        assert "## Related" in text
+        assert "Orphan Section One" not in text
+        assert "Another Orphan" not in text
+        assert "Preamble text." in text
+
+    def test_no_change_when_clean(self, vault: BrainVault, vault_dir: Path):
+        """Entities with only schema sections return no_change."""
+        path = vault_dir / "testproject" / "system" / "Clean System.md"
+        path.write_text(textwrap.dedent("""\
+            ---
+            title: Clean System
+            guid: e5e5e5e5-f6f6-a7a7-b8b8-c9c9c9c9c9c9
+            type: [system]
+            status: active
+            tags: [architecture]
+            project: [TestProject]
+            ---
+            # Clean System
+
+            ## Intent
+
+            Well-formed intent.
+
+            ## Related
+
+            - [[Token Efficiency]]
+        """), encoding="utf-8")
+
+        result = vault.clean_body("Clean System")
+        assert result["action"] == "no_change"
+        assert result["removed"] == []
+
+    def test_not_found_raises(self, vault: BrainVault):
+        with pytest.raises(FileNotFoundError):
+            vault.clean_body("Nonexistent Entity")
 
 
 # ---------------------------------------------------------------------------

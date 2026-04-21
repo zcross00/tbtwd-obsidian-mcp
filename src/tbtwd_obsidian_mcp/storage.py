@@ -451,6 +451,98 @@ class BrainVault:
                                 results.append((type_dir.name, p))
         return results
 
+    # -- vault stats -------------------------------------------------------
+
+    def get_stats(self) -> dict[str, Any]:
+        """Return vault health and growth metrics.
+
+        Provides entity counts by type and project, link density,
+        and staleness indicators. Useful for measuring vault growth
+        over time and identifying areas that need attention.
+
+        Returns a dict with:
+        - total_entities: overall count
+        - by_type: {type: count}
+        - by_project: {project: count}
+        - by_type_and_project: {project: {type: count}}
+        - link_density: average outgoing wikilinks per entity
+        - entities_without_links: count of entities with no [[links]]
+        - schema_compliance: count of entities with orphan sections
+        """
+        entities = self._iter_entity_files()
+        schema = self._load_body_schema()
+
+        by_type: dict[str, int] = {}
+        by_project: dict[str, int] = {}
+        by_type_and_project: dict[str, dict[str, int]] = {}
+        total_links = 0
+        no_links_count = 0
+        orphan_section_count = 0
+        total = 0
+
+        for type_name, path in entities:
+            total += 1
+            by_type[type_name] = by_type.get(type_name, 0) + 1
+
+            try:
+                text = path.read_text(encoding="utf-8")
+                fm, body = _parse_frontmatter(text)
+            except Exception:
+                continue
+
+            # Project attribution
+            projects = fm.get("project", [])
+            if isinstance(projects, str):
+                projects = [projects]
+            for proj in projects:
+                by_project[proj] = by_project.get(proj, 0) + 1
+                if proj not in by_type_and_project:
+                    by_type_and_project[proj] = {}
+                p_types = by_type_and_project[proj]
+                p_types[type_name] = p_types.get(type_name, 0) + 1
+
+            # Link density
+            links = extract_wikilinks(text)
+            total_links += len(links)
+            if not links:
+                no_links_count += 1
+
+            # Schema compliance: check for orphan sections
+            etype = fm.get("type", ["concept"])
+            if isinstance(etype, list):
+                etype = etype[0]
+            allowed_fields = schema.get("types", {}).get(etype, [])
+            allowed_headings: set[str] = set()
+            for f in allowed_fields:
+                h = self._heading_for_field(f, schema)
+                if h is not None:
+                    allowed_headings.add(h)
+
+            for m in re.finditer(r"^## (.+?)\s*$", body, re.MULTILINE):
+                heading = m.group(1).strip()
+                if heading not in allowed_headings:
+                    orphan_section_count += 1
+                    break  # count entity once, not per orphan
+
+        avg_links = round(total_links / total, 1) if total > 0 else 0
+
+        return {
+            "total_entities": total,
+            "by_type": dict(sorted(by_type.items())),
+            "by_project": dict(sorted(by_project.items())),
+            "by_type_and_project": {
+                k: dict(sorted(v.items()))
+                for k, v in sorted(by_type_and_project.items())
+            },
+            "link_density": {
+                "average_links_per_entity": avg_links,
+                "entities_without_links": no_links_count,
+            },
+            "schema_compliance": {
+                "entities_with_orphan_sections": orphan_section_count,
+            },
+        }
+
     def _resolve_entity_path(
         self, identifier: str, *, include_archived: bool = False
     ) -> Path | None:
@@ -872,6 +964,84 @@ class BrainVault:
         # No reference points — append at end
         return len(body.rstrip()) + 1
 
+    # -- body cleanup ------------------------------------------------------
+
+    def clean_body(self, entity_id: str) -> dict[str, Any]:
+        """Remove non-schema sections from an entity's body.
+
+        Reads the entity, identifies all ``## Heading`` sections, removes
+        any that don't map to an allowed field in the entity type's body
+        schema.  Preserves preamble, H1 title, and all schema-defined
+        sections in canonical order.
+
+        Args:
+            entity_id: Entity identifier (slug, path, frontmatter ID, or GUID).
+
+        Returns:
+            Confirmation with list of removed headings and git info.
+        """
+        path = self._resolve_entity_path(entity_id)
+        if path is None:
+            raise FileNotFoundError(f"Entity {entity_id} not found in vault")
+
+        text = path.read_text(encoding="utf-8")
+        fm, body = _parse_frontmatter(text)
+
+        schema = self._load_body_schema()
+        entity_type = fm.get("type", ["concept"])
+        if isinstance(entity_type, list):
+            entity_type = entity_type[0]
+        allowed_fields = schema.get("types", {}).get(entity_type, [])
+
+        # Build set of allowed headings from schema
+        allowed_headings: set[str] = set()
+        for f in allowed_fields:
+            h = self._heading_for_field(f, schema)
+            if h is not None:  # skip preamble
+                allowed_headings.add(h)
+
+        # Find all ## sections and identify orphans
+        removed: list[str] = []
+        section_pattern = re.compile(
+            r"^(## (.+?)\s*\n(.*?))(?=^## |\Z)",
+            re.MULTILINE | re.DOTALL,
+        )
+
+        # Work backwards to preserve positions
+        matches = list(section_pattern.finditer(body))
+        for m in reversed(matches):
+            heading = m.group(2).strip()
+            if heading not in allowed_headings:
+                body = body[: m.start()] + body[m.end():]
+                removed.append(heading)
+
+        if not removed:
+            return {
+                "entity": entity_id,
+                "action": "no_change",
+                "removed": [],
+            }
+
+        # Clean up excessive blank lines
+        body = re.sub(r"\n{3,}", "\n\n", body)
+
+        new_text = _serialize_frontmatter(fm, body)
+        warnings = self._validate_links(new_text)
+        path.write_text(new_text, encoding="utf-8")
+
+        git_info = self._commit_and_push(
+            path, f"clean body: {entity_id} (removed {len(removed)} orphan sections)"
+        )
+
+        removed.reverse()  # restore original order
+        return {
+            "entity": entity_id,
+            "action": "cleaned",
+            "removed": removed,
+            "warnings": warnings,
+            **git_info,
+        }
+
     # -- archival ----------------------------------------------------------
 
     def archive_entity(self, entity_id: str) -> dict[str, Any]:
@@ -1020,6 +1190,109 @@ class BrainVault:
                     })
 
         return broken
+
+    def check_consistency(self) -> dict[str, Any]:
+        """Check the vault for structural inconsistencies.
+
+        Runs multiple checks beyond broken links:
+        - Missing required frontmatter fields per types.yml
+        - Invalid tags not in the controlled vocabulary
+        - Broken serves/depends-on frontmatter references
+        - Duplicated entity titles (potential merge candidates)
+
+        Returns a report dict with issues grouped by check type.
+        """
+        types_config = self._load_types_config()
+        valid_tags = self._allowed_tags()
+
+        missing_fields: list[dict[str, Any]] = []
+        invalid_tags: list[dict[str, Any]] = []
+        broken_refs: list[dict[str, Any]] = []
+        title_map: dict[str, list[str]] = {}  # normalized title → [entity paths]
+
+        for type_name, path in self._iter_entity_files():
+            rel = str(path.relative_to(self.root))
+            try:
+                text = path.read_text(encoding="utf-8")
+                fm, _ = _parse_frontmatter(text)
+            except Exception:
+                continue
+
+            # --- Missing required fields ---
+            etype = fm.get("type", [type_name])
+            if isinstance(etype, list):
+                etype_str = etype[0] if etype else type_name
+            else:
+                etype_str = etype
+            type_def = types_config.get(etype_str, {})
+            required = type_def.get("required-fields", [])
+            for field in required:
+                if field not in fm or fm[field] is None:
+                    missing_fields.append({
+                        "entity": rel,
+                        "field": field,
+                        "type": etype_str,
+                    })
+
+            # --- Invalid tags ---
+            entity_tags = fm.get("tags", [])
+            if isinstance(entity_tags, str):
+                entity_tags = [entity_tags]
+            for tag in entity_tags:
+                if tag not in valid_tags:
+                    invalid_tags.append({
+                        "entity": rel,
+                        "tag": tag,
+                    })
+
+            # --- Broken serves/depends-on references ---
+            for ref_field in ("serves", "depends-on"):
+                refs = fm.get(ref_field, [])
+                if isinstance(refs, str):
+                    refs = [refs]
+                for ref in refs:
+                    # Extract entity name from [[Name]] format
+                    link_match = re.match(r"\[\[(.+?)]]", ref)
+                    target = link_match.group(1) if link_match else ref
+                    if target and not self._resolve_link(target):
+                        broken_refs.append({
+                            "entity": rel,
+                            "field": ref_field,
+                            "target": target,
+                        })
+
+            # --- Duplicate title detection ---
+            title = fm.get("title", path.stem)
+            normalized = title.lower().strip()
+            if normalized not in title_map:
+                title_map[normalized] = []
+            title_map[normalized].append(rel)
+
+        duplicates = [
+            {"title": title, "entities": paths}
+            for title, paths in title_map.items()
+            if len(paths) > 1
+        ]
+
+        total_issues = (
+            len(missing_fields) + len(invalid_tags)
+            + len(broken_refs) + len(duplicates)
+        )
+
+        return {
+            "total_issues": total_issues,
+            "missing_required_fields": missing_fields,
+            "invalid_tags": invalid_tags,
+            "broken_frontmatter_refs": broken_refs,
+            "duplicate_titles": duplicates,
+        }
+
+    def _load_types_config(self) -> dict[str, Any]:
+        """Load types.yml and return the type definitions dict."""
+        types_path = self.root / "types.yml"
+        if not types_path.exists():
+            return {}
+        return yaml.safe_load(types_path.read_text(encoding="utf-8")) or {}
 
     # -- full-text search --------------------------------------------------
 
