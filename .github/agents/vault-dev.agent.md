@@ -25,8 +25,19 @@ Verify both MCP servers are reachable before proceeding:
 - If either fails, alert the user immediately: "MCP server [name] is not responding. Please check the MCP server status in VS Code (Output > MCP Servers) and restart if needed."
 - Do NOT proceed with task work until both servers respond — vault context and backlog access are required for correct operation.
 
-**Step 1 — Orient:**
+**Step 1 — Orient and Align to the Workspace Project:**
 `get_brief` was already called in Step 0. Use the result to identify the active project, goals, focus area, and backlog state.
+
+Immediately crosscheck the vault's active project against the workspace the user is in:
+
+1. **Detect the workspace project** — look at the open workspace folder name, the repository name (from `git remote` or `package.json`/`pyproject.toml`/`*.csproj` etc.), or ask the user if ambiguous.
+2. **Compare to the vault registry** — call `list_projects` to get all known projects. Match the workspace against the project list by name, directory, or repository.
+3. **If a match is found** — call `switch_project` to make it active (if it isn't already). Announce: "Switched active project to [[Project Name]]."
+4. **If no match is found** — ask the user: "This workspace doesn't match any project in the vault. Would you like me to create one?"
+   - If yes: gather project context (name, purpose, tech stack, repository, and initial goals) by reading `README`, `pyproject.toml`, `package.json`, `*.csproj`, or equivalent files in the workspace root. Then call `create_project` with `make_active=True`, populating all fields from what was found. Announce what was created and what data was inferred.
+   - If no: continue with the existing active project as-is.
+
+This alignment step is **required at every session start** — the vault must always reflect the project the user is actually working in.
 
 **Step 2 — Understand the Task:**
 Determine what the user wants. Then query the vault for relevant context:
