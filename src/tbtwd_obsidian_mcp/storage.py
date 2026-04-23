@@ -69,7 +69,7 @@ class BrainVault:
     _CACHE_ROOT = Path.home() / ".cache" / "tbtwd-brain"
 
     _PUSH_INTERVAL = 60  # seconds between batched pushes
-    _EDITABLE_BRIEF_FIELDS = ("active-project", "focus")
+    _EDITABLE_BRIEF_FIELDS = ("active-project", "active-branch", "focus")
     _INVALID_FILENAME_CHARS = set('<>:"/\\|?*')
 
     def __init__(
@@ -617,6 +617,10 @@ class BrainVault:
                         f"Available projects: {available}"
                     )
                 normalized_fields[name] = value
+            elif name == "active-branch":
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError("'active-branch' must be a non-empty string")
+                normalized_fields[name] = value.strip()
             elif name == "focus":
                 if not isinstance(value, str):
                     raise ValueError("'focus' must be a string")

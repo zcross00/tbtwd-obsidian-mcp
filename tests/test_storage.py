@@ -1206,6 +1206,15 @@ class TestUpdateBrief:
         assert concepts
         assert all(entry["relevance"] == "background" for entry in concepts)
 
+    def test_update_active_branch(self, vault: BrainVault, vault_dir: Path):
+        result = vault.update_brief({"active-branch": "development"})
+
+        assert result["updated"] == ["active-branch"]
+        assert result["brief"]["active-branch"] == "development"
+
+        brief_text = (vault_dir / "brief.yml").read_text(encoding="utf-8")
+        assert yaml.safe_load(brief_text)["active-branch"] == "development"
+
     def test_update_brief_rejects_unknown_field(self, vault: BrainVault):
         with pytest.raises(ValueError, match="Unknown brief fields"):
             vault.update_brief({"projects": {}})

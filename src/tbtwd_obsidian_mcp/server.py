@@ -74,7 +74,7 @@ WRITING:
 - create_project: bootstrap a new project entry in brief.yml plus its directory tree and companion project entity.
 - update_project: update safe metadata fields (summary, repo, stack, goals) on an existing project.
 - delete_project: remove a project from the registry and archive its directory to .trash/. Supports dry_run preview.
-- update_brief: update brief.yml orientation state (currently active-project and focus). Auto-validates YAML-safe fields, commits, and pushes.
+- update_brief: update brief.yml orientation state (active-project, active-branch, and focus). Auto-validates YAML-safe fields, commits, and pushes.
 - update_memory: update an entity's YAML frontmatter. Auto-validates links, commits, and pushes to GitHub.
 - update_body: update or create a named section in an entity's markdown body. Replaces existing \
 sections or inserts new ones. Auto-validates links, commits, and pushes.
@@ -185,6 +185,7 @@ def update_brief(fields: dict) -> str:
         fields: Dictionary of brief fields to update.
             Supported keys:
             - active-project: must match an existing project key in brief.yml
+            - active-branch: current vault branch name
             - focus: current focus area string (use an empty string to clear)
 
     Returns confirmation with updated field names and the refreshed brief payload.
